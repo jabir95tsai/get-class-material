@@ -695,8 +695,8 @@ def _cmd_pick(base_url: str, args: argparse.Namespace) -> int:
                 f"Could not create the login folder (access denied): {exc}",
             ))
             print(t(
-                "  → 請改在可寫入的資料夾執行,例如先打 `cd $HOME` 再跑 `ntu-cool-gcm`。",
-                "  → Run from a writable folder, e.g. `cd $HOME` then `ntu-cool-gcm`.",
+                "  → 請改在可寫入的資料夾執行,例如先打 `cd $HOME` 再跑 `get-class-material`。",
+                "  → Run from a writable folder, e.g. `cd $HOME` then `get-class-material`.",
             ))
             return False
         except Exception as exc:  # RuntimeError from SSO, or Playwright's own Error
@@ -1181,14 +1181,14 @@ def _cmd_pick(base_url: str, args: argparse.Namespace) -> int:
 def pick_main(argv: list[str] | None = None) -> int:
     """Console-script alias: behaves like `ntu-cool-materials pick`.
 
-    When called from the `ntu-cool-gcm` entry point, argv is None and we forward
+    When called from the `get-class-material` (or legacy `ntu-cool-gcm`) entry point, argv is None and we forward
     sys.argv[1:] so flags like `--help` and `--refresh-session` pass through.
     """
     forwarded = list(sys.argv[1:]) if argv is None else list(argv)
     # `--version`/`-V` would otherwise be forwarded into the `pick` subparser,
-    # which doesn't define it. Handle it here so `ntu-cool-gcm -V` works.
+    # which doesn't define it. Handle it here so `get-class-material -V` works.
     if any(arg in ("--version", "-V") for arg in forwarded):
-        print(f"ntu-cool-gcm {_version_string()}")
+        print(f"get-class-material {_version_string()}")
         return 0
     return main(["pick", *forwarded])
 

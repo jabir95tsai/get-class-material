@@ -204,8 +204,8 @@ def _add_scripts_to_user_path_windows(scripts_dir: Path) -> bool:
     )
     if ok:
         print(t(
-            "    ⚠ 請關掉這個視窗、重新打開,之後就能直接打 `ntu-cool-gcm` 啟動。",
-            "    ⚠ Close this window, reopen it, then `ntu-cool-gcm` will work directly.",
+            "    ⚠ 請關掉這個視窗、重新打開,之後就能直接打 `get-class-material` 啟動。",
+            "    ⚠ Close this window, reopen it, then `get-class-material` will work directly.",
         ))
     return ok
 
@@ -267,7 +267,7 @@ def _add_scripts_to_user_path_posix(scripts_dir: Path) -> bool:
 
     block = (
         f"\n{_POSIX_RC_MARKER_BEGIN}\n"
-        f"# Added by ntu-cool-gcm doctor so the `ntu-cool-gcm` shortcut resolves.\n"
+        f"# Added by get-class-material doctor so the `get-class-material` command resolves.\n"
         f"# Remove this block to undo.\n"
         f'export PATH="$PATH:{scripts_dir}"\n'
         f"{_POSIX_RC_MARKER_END}\n"
@@ -296,8 +296,8 @@ def _add_scripts_to_user_path_posix(scripts_dir: Path) -> bool:
 
     print(f"    ✓ 已把 {scripts_dir} 加進 {rc_path}")
     print(t(
-        f"    ⚠ 請執行 `source {rc_path}` 或開新的終端機,之後就能直接打 `ntu-cool-gcm`。",
-        f"    ⚠ Run `source {rc_path}` or open a new terminal, then `ntu-cool-gcm` will work directly.",
+        f"    ⚠ 請執行 `source {rc_path}` 或開新的終端機,之後就能直接打 `get-class-material`。",
+        f"    ⚠ Run `source {rc_path}` or open a new terminal, then `get-class-material` will work directly.",
     ))
     return True
 
@@ -477,7 +477,7 @@ def _scripts_on_path_fix_hint(scripts_dir: Path) -> str:
 
 def check_scripts_on_path() -> CheckResult:
     """Python's scripts dir must be on PATH or pip's entry-point shims
-    (`ntu-cool-gcm` etc.) won't resolve from a fresh shell.
+    (`get-class-material` etc.) won't resolve from a fresh shell.
 
     Cross-platform since 0.2.7: previously Windows-only, but the same
     pitfall hits Mac users who install Python from the python.org installer
@@ -515,7 +515,7 @@ def check_ntu_session(headers_path: Path) -> CheckResult:
             ok=False,
             optional=True,
             detail=f"找不到 {headers_path}",
-            fix_command="ntu-cool-gcm --refresh-session (會開啟瀏覽器讓你登入)",
+            fix_command="get-class-material --refresh-session (會開啟瀏覽器讓你登入)",
         )
     age_hr = (time.time() - headers_path.stat().st_mtime) / 3600
     age_label = (
@@ -641,7 +641,7 @@ def run_doctor(
 # name when Playwright itself can't be imported, so both names must block.
 BLOCKING_NAMES = {"Python 3.11 以上", "Playwright (Python 套件)", "Playwright Chromium", "yt-dlp"}
 # "Recommended" — only the YouTube stage needs them (and the PATH entry only
-# shortens `python -m ntu_cool_materials pick` to `ntu-cool-gcm`). They touch
+# shortens `python -m ntu_cool_materials pick` to `get-class-material`). They touch
 # the system (winget/brew, the user's PATH), so they are offered, never forced.
 RECOMMENDED_NAMES = {
     "Node.js (下載 YouTube 影片用)",

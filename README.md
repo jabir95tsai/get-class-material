@@ -14,8 +14,11 @@
 
 ```powershell
 python -m pip install get-class-material
-ntu-cool-gcm
+get-class-material
 ```
+
+> 舊指令 `ntu-cool-gcm` 仍可使用，功能完全相同。 / The old `ntu-cool-gcm` command still works.
+
 更新到最新版,輸入:
 
 ```powershell
@@ -100,7 +103,7 @@ python -m pip install get-class-material
 ### 第 5 步 — 第一次跑工具
 
 ```powershell
-ntu-cool-gcm
+get-class-material
 ```
 
 第一次跑會花幾分鐘,因為它會幫你裝幾個額外的東西:
@@ -255,18 +258,18 @@ C:\Users\你\Documents\ntu-cool-gcm_material\
 
 ### 登入過期了
 
-**多數情況你不用做任何事** — 直接跑 `ntu-cool-gcm`,工具會在連線時自動發現登入過期,並馬上幫你開瀏覽器重新登入(你會看到「登入已過期,開啟瀏覽器重新登入…」)。
+**多數情況你不用做任何事** — 直接跑 `get-class-material`,工具會在連線時自動發現登入過期,並馬上幫你開瀏覽器重新登入(你會看到「登入已過期,開啟瀏覽器重新登入…」)。
 
 如果想手動強制重新登入,也可以加:
 
 ```powershell
-ntu-cool-gcm --refresh-session
+get-class-material --refresh-session
 ```
 
 ### 只想下載 PDF,不要影片
 
 ```powershell
-ntu-cool-gcm --skip-youtube --skip-cool-videos
+get-class-material --skip-youtube --skip-cool-videos
 ```
 
 下載課程時預設一併抓取所有可見公告（標題、作者、日期與全文），存放於課程資料夾的 `announcements/announcements.md` 與 `announcements/.announcements.json`（隱藏檔）。每次執行會重新抓取，以更新老師修改過的公告；課程總覽亦提供公告連結。可用 `--skip-announcements` 略過。
@@ -276,7 +279,7 @@ ntu-cool-gcm --skip-youtube --skip-cool-videos
 ### 換存檔位置
 
 ```powershell
-ntu-cool-gcm --out D:\我的課程
+get-class-material --out D:\我的課程
 ```
 
 預設是在你的「文件 / Documents」資料夾底下的 `ntu-cool-gcm_material/`。
@@ -300,7 +303,7 @@ ntu-cool-gcm --out D:\我的課程
 
 ```powershell
 # 額外檢查本機內容雜湊 / Verify local SHA-256 before skipping
-ntu-cool-gcm --verify-files
+get-class-material --verify-files
 
 # 限制並行數 / Limit simultaneous file transfers
 ntu-cool-materials download-course --course-id 57544 --workers 2
@@ -333,7 +336,7 @@ ntu-cool-materials doctor --fix
 ### 看自己是哪個版本(回報問題時很有用)
 
 ```powershell
-ntu-cool-gcm --version
+get-class-material --version
 ```
 
 `doctor` 的最上面也會印出版本號。回報問題時附上版本,會比較好幫你查。
@@ -380,7 +383,7 @@ ntu-cool-gcm --version
 ```powershell
 python -m pip install "get-class-material[notebooklm]"
 notebooklm login          # 第一次:在跳出的 Chrome 視窗登入 Google
-ntu-cool-gcm --notebooklm # 選課、下載,完成後直接匯入
+get-class-material --notebooklm # 選課、下載,完成後直接匯入
 ```
 
 已經下載過的課程,執行 `ntu-cool-materials notebooklm` 就能從清單選課匯入。
@@ -400,9 +403,9 @@ ntu-cool-materials notebooklm
 
 登入狀態由 `notebooklm-py` 保存在本機。可用 `NOTEBOOKLM_HOME` 或 `--notebooklm-storage` 指定。不要提交或分享登入檔案。程式不會從日常 Chrome 擷取 Cookie；登入失效時請重新執行登入程式。
 
-舊版的擴充套件（`--extension`）、自動化瀏覽器（`--browser`）與手動上傳資料夾（`--manual`）已移除。沒有安裝 `notebooklm-py` 時，`ntu-cool-gcm` 下載完成後不會詢問匯入，只會提示一次安裝指令；明確加 `--notebooklm` 則會顯示安裝方式並回傳失敗。
+舊版的擴充套件（`--extension`）、自動化瀏覽器（`--browser`）與手動上傳資料夾（`--manual`）已移除。沒有安裝 `notebooklm-py` 時，`get-class-material` 下載完成後不會詢問匯入，只會提示一次安裝指令；明確加 `--notebooklm` 則會顯示安裝方式並回傳失敗。
 
-成功使用本機 API 登入後，會將登入檔的絕對路徑記錄在 `~/.ntu-cool-gcm/notebooklm-storage.json`（只記錄位置，不複製憑證），之後從其他目錄啟動 `gcm` 也能沿用。明確指定的登入參數及目前目錄的登入設定仍優先；刪除這個位置紀錄即可取消跨目錄沿用。
+成功使用本機 API 登入後，會將登入檔的絕對路徑記錄在 `~/.ntu-cool-gcm/notebooklm-storage.json`（只記錄位置，不複製憑證），之後從其他目錄啟動 `get-class-material` 也能沿用。明確指定的登入參數及目前目錄的登入設定仍優先；刪除這個位置紀錄即可取消跨目錄沿用。
 
 ### CLI 指定課程流程
 
@@ -423,17 +426,17 @@ ntu-cool-materials notebooklm --course-id 60804 --verify-only
 
 ### 互動選課流程
 
-1. 執行 `ntu-cool-gcm`，用自己的台大帳號登入、選課下載。
+1. 執行 `get-class-material`，用自己的台大帳號登入、選課下載。
 2. 下載完成後回答「要將這門課匯入 NotebookLM 嗎？」；預設否，下載不會自動把教材送到 Google。
 3. 回答 `y` 就直接開始 API 匯入：沿用此課程已記錄的筆記本，首次則以課程名稱自動建立。不再選筆記本或二次確認。
 4. 終端機顯示匯入結果與筆記本連結。缺少或過期的登入會提示重新登入；上傳失敗時教材仍會保留。
 
-一般 `gcm` 指令也會沿用目前目錄 `.secrets`（不存在時使用家目錄 `.ntu-cool-gcm/.secrets`）內的 `notebooklm-api` API 登入。明確指定 `--notebooklm-storage` 或 SDK 的 `NOTEBOOKLM_HOME`／`NOTEBOOKLM_PROFILE`／`NOTEBOOKLM_AUTH_JSON` 時，以指定設定為準。若都沒有本機登入則使用 SDK 的預設設定檔。API 功能需在執行 `gcm` 的同一 Python 環境安裝 `get-class-material[notebooklm]`。
+一般 `get-class-material` 指令也會沿用目前目錄 `.secrets`（不存在時使用家目錄 `.ntu-cool-gcm/.secrets`）內的 `notebooklm-api` API 登入。明確指定 `--notebooklm-storage` 或 SDK 的 `NOTEBOOKLM_HOME`／`NOTEBOOKLM_PROFILE`／`NOTEBOOKLM_AUTH_JSON` 時，以指定設定為準。若都沒有本機登入則使用 SDK 的預設設定檔。API 功能需在執行 `get-class-material` 的同一 Python 環境安裝 `get-class-material[notebooklm]`。
 
 已有教材的使用者只要執行 `ntu-cool-materials notebooklm`，就能從預設下載目錄選課，
 也可輸入其他資料夾路徑。每位使用者使用自己的帳號與本機設定檔，不需要維護者的 Google 帳號、API key 或 Codex。
 `--no-notebooklm` 可略過下載後的詢問；管線／非互動模式不會自動詢問。
-匯入訊息預設是中文，`notebooklm`、`download-course`、`ntu-cool-gcm` 都可加 `--lang en` 改成英文。
+匯入訊息預設是中文，`notebooklm`、`download-course`、`get-class-material` 都可加 `--lang en` 改成英文。
 
 ```powershell
 # 開啟既有教材匯入引導 / Guided course picker
@@ -443,7 +446,7 @@ ntu-cool-materials notebooklm
 ntu-cool-materials notebooklm --course-dir "C:\教材\課程名稱 (60804)" --guide
 
 # 選課、下載後，自動匯入 NotebookLM / Download, then import
-ntu-cool-gcm --notebooklm
+get-class-material --notebooklm
 
 # 指定單一課程 / One course
 ntu-cool-materials download-course --course-id 60804 --notebooklm
@@ -514,7 +517,7 @@ API 模式使用**非官方 Google 個人版介面**，不是 Enterprise 官方 
 python -m pip install --upgrade get-class-material
 ```
 
-已經是最新版的話它不會做任何事,隨時都可以放心跑。想確認自己現在哪一版,打 `ntu-cool-gcm --version`。
+已經是最新版的話它不會做任何事,隨時都可以放心跑。想確認自己現在哪一版,打 `get-class-material --version`。
 
 ### Q: 輸入 `python --version` 顯示「無法辨識」/「找不到」
 
@@ -528,7 +531,7 @@ python -m pip install --upgrade get-class-material
 
 ### Q: 顯示「應用程式控制原則已封鎖此檔案」(WinError 4551)
 
-Windows 的 Smart App Control / 應用程式控制原則擋下了未簽章的執行檔(例如 `pip.exe`、`ntu-cool-gcm.exe`)。所以本文件一律用 `python -m pip` 安裝與更新;如果連 `ntu-cool-gcm` 也被擋,改用:
+Windows 的 Smart App Control / 應用程式控制原則擋下了未簽章的執行檔(例如 `pip.exe`、`get-class-material.exe`)。所以本文件一律用 `python -m pip` 安裝與更新;如果連 `get-class-material` 也被擋,改用:
 
 ```powershell
 python -X utf8 -m ntu_cool_materials pick
@@ -546,7 +549,7 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
 按 `Y` 確認。然後關掉視窗,正常開一個新的就 OK。
 
-### Q: `ntu-cool-gcm` 跑下去說 `winget` 找不到
+### Q: `get-class-material` 跑下去說 `winget` 找不到
 
 `winget` 是 Windows 11 內建的應用程式安裝工具。Windows 10 比較舊版可能沒有。
 
@@ -556,14 +559,14 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 1. ffmpeg: <https://www.gyan.dev/ffmpeg/builds/>(下載 `ffmpeg-release-essentials.zip`)
 2. Node.js: <https://nodejs.org/>(下載 LTS 版)
 
-裝完關掉 PowerShell 重開,再跑 `ntu-cool-gcm`。
+裝完關掉 PowerShell 重開,再跑 `get-class-material`。
 
 ### Q: NTU COOL 登入過期了
 
-直接再跑一次 `ntu-cool-gcm` 就好 — 工具會自動發現過期並開瀏覽器讓你重新登入。要手動強制的話可以加 `--refresh-session`:
+直接再跑一次 `get-class-material` 就好 — 工具會自動發現過期並開瀏覽器讓你重新登入。要手動強制的話可以加 `--refresh-session`:
 
 ```powershell
-ntu-cool-gcm --refresh-session
+get-class-material --refresh-session
 ```
 
 ### Q: YouTube 影片抓不到 / 失敗很多
@@ -578,7 +581,7 @@ ntu-cool-gcm --refresh-session
 
 ### Q: 下載到一半中斷怎麼辦
 
-**直接再跑一次 `ntu-cool-gcm`** 即可。
+**直接再跑一次 `get-class-material`** 即可。
 
 - 已記錄完成且版本／本機大小吻合的檔案會跳過。
 - 伺服器支援 Range，且部分檔案具有吻合的 ETag／Last-Modified 時才續傳；無法確認版本時會安全地重新下載。
@@ -604,7 +607,7 @@ C:\Users\你\Documents\ntu-cool-gcm_material\
 可以:
 
 ```powershell
-ntu-cool-gcm --skip-pages --skip-youtube --skip-cool-videos
+get-class-material --skip-pages --skip-youtube --skip-cool-videos
 ```
 
 ### Q: 可以換輸出資料夾嗎
@@ -612,7 +615,7 @@ ntu-cool-gcm --skip-pages --skip-youtube --skip-cool-videos
 可以:
 
 ```powershell
-ntu-cool-gcm --out D:\我的課程資料夾
+get-class-material --out D:\我的課程資料夾
 ```
 
 ### Q: 影片畫質好像不太好
@@ -655,7 +658,7 @@ NTU 上課影片(cool-video)畫質維持來源原檔。
 - ❌ **不要**分享給別人,連同學也不要
 - ❌ **不要**上傳到 GitHub、雲端硬碟、Discord
 - ❌ **不要**截圖貼到聊天室
-- ✅ 換電腦就重新跑 `ntu-cool-gcm --refresh-session` 重新登入即可
+- ✅ 換電腦就重新跑 `get-class-material --refresh-session` 重新登入即可
 
 預設它是隱藏資料夾(Windows 用 `dir` 看不到,要在檔案總管開「顯示隱藏檔」才看得到)。
 
@@ -683,7 +686,7 @@ ntu-cool-materials announcements --course-id 57544 --refresh-session --print
 
 ```powershell
 ntu-cool-materials --help
-ntu-cool-gcm --help
+get-class-material --help
 ```
 
 ---

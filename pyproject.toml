@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "get-class-material"
-version = "1.0.2"
+version = "1.0.3"
 description = "One-command bulk downloader for NTU COOL (Canvas) course materials — PDFs, lecture videos, and Pages."
 readme = "README.md"
 license = "MIT"
@@ -43,6 +43,7 @@ notebooklm = ["notebooklm-py[browser]==0.8.3", "markitdown[xlsx,xls]>=0.1.2"]
 
 [project.scripts]
 ntu-cool-materials = "ntu_cool_materials.cli:main"
+get-class-material = "ntu_cool_materials.cli:pick_main"
 ntu-cool-gcm = "ntu_cool_materials.cli:pick_main"
 ntu-cool-video = "ntu_cool_materials.cool_video:main"
 ntu-cool-session = "ntu_cool_materials.browser_session:main"

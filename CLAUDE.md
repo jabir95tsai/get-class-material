@@ -24,7 +24,8 @@ There is no linter, formatter, or type-checker configured in `pyproject.toml`. T
 
 Console entry points (declared in `pyproject.toml`):
 - `ntu-cool-materials` → `ntu_cool_materials.cli:main` (subcommands: `courses`, `sync`, `announcements`, `download-course`, `pick`)
-- `ntu-cool-gcm`       → `ntu_cool_materials.cli:pick_main` (shortcut alias for `ntu-cool-materials pick`)
+- `get-class-material` → `ntu_cool_materials.cli:pick_main` (shortcut alias for `ntu-cool-materials pick`; school-neutral primary name)
+- `ntu-cool-gcm`       → same as `get-class-material` (legacy name, kept for existing users)
 - `ntu-cool-video`     → `cool_video:main` (DASH `.m4s` segment downloader + ffmpeg mux)
 - `ntu-cool-session`   → `browser_session:main` (Playwright session refresh)
 - `youtube-cookies`    → `youtube_cookies:main` (export YouTube cookies for yt-dlp)

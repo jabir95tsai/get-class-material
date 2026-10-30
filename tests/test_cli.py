@@ -49,7 +49,7 @@ class VersionTests(unittest.TestCase):
         with contextlib.redirect_stdout(buf):
             rc = cli.pick_main(["--version"])
         self.assertEqual(rc, 0)
-        self.assertIn("ntu-cool-gcm", buf.getvalue())
+        self.assertIn("get-class-material", buf.getvalue())
         self.assertIn(cli._version_string(), buf.getvalue())
 
     def test_pick_main_intercepts_short_V(self) -> None:
