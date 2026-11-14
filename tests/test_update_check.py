@@ -209,6 +209,30 @@ class YtDlpUpdateTests(unittest.TestCase):
                     self.assertIn("yt-dlp -U", msg)
 
 
+class AutoUpdateDependenciesTests(unittest.TestCase):
+    def test_upgrades_only_outdated_and_reinstalls_chromium_for_playwright(self) -> None:
+        from unittest import mock
+        installed = {"yt-dlp": "2026.1.1", "playwright": "1.50.0"}
+        latest = {"yt-dlp": "2026.1.1", "playwright": "1.55.0"}
+        run = mock.Mock(return_value=mock.Mock(returncode=0))
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch("importlib.metadata.version", side_effect=installed.__getitem__):
+            update_check.auto_update_dependencies(Path(tmp), fetch=latest.__getitem__, run=run)
+        cmds = [c.args[0][1:] for c in run.call_args_list]
+        self.assertEqual(cmds, [["-m", "pip", "install", "--upgrade", "playwright"],
+                                ["-m", "playwright", "install", "chromium"]])
+
+    def test_never_raises_when_offline_or_pip_fails(self) -> None:
+        from unittest import mock
+        def offline(_package):
+            raise OSError("offline")
+        run = mock.Mock(side_effect=OSError("pip blocked"))
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch("importlib.metadata.version", return_value="1.0"):
+            update_check.auto_update_dependencies(Path(tmp), fetch=offline, run=run)
+            update_check.auto_update_dependencies(Path(tmp), fetch=lambda _p: "9.0", run=run)
+
+
 class ResolveYtDlpTests(unittest.TestCase):
     def test_finds_launcher_in_scripts_dir_when_not_on_path(self) -> None:
         import os

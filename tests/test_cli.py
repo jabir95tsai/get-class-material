@@ -150,6 +150,7 @@ class PickNotebookLMBatchTests(unittest.TestCase):
 
         with mock.patch.object(cli, "ensure_ready", return_value=True), \
                 mock.patch.object(cli, "check_for_update", return_value=None), \
+                mock.patch.object(cli, "auto_update_dependencies"), \
                 mock.patch.object(cli, "CanvasSessionClient", return_value=client), \
                 mock.patch.object(cli, "read_headers_file", return_value={}), \
                 mock.patch.object(cli, "download_course", side_effect=fake_download_course), \

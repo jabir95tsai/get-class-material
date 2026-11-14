@@ -365,6 +365,7 @@ class PipelineTests(unittest.TestCase):
                                          (["1", "a", "q"], [failed, success], 0)]:
             with patch.object(cli, "ensure_ready", return_value=True), \
                  patch.object(cli, "check_for_update", return_value=None), \
+                 patch.object(cli, "auto_update_dependencies"), \
                  patch.object(cli, "CanvasSessionClient", return_value=self.client), \
                  patch.object(cli, "download_course", side_effect=plans) as download, \
                  patch("builtins.input", side_effect=replies):
@@ -389,6 +390,7 @@ class PipelineTests(unittest.TestCase):
                 "--keep-terminal", *flag])
             with patch.object(cli, "ensure_ready", return_value=True), \
                  patch.object(cli, "check_for_update", return_value=None), \
+                 patch.object(cli, "auto_update_dependencies"), \
                  patch.object(cli, "CanvasSessionClient", return_value=self.client), \
                  patch.object(cli, "download_course", return_value=plan), \
                  patch("ntu_cool_materials.console.stdin_is_interactive", return_value=True), \

@@ -23,7 +23,7 @@ from .i18n import get_lang, set_lang, t
 from .session_client import AUTH_EXPIRED, CanvasSessionClient, read_headers_file
 from .spinner import spinner
 from .storage import ManifestStore
-from .update_check import check_for_update
+from .update_check import auto_update_dependencies, check_for_update
 from .sync import SyncStats, sync_course_materials
 from . import console
 
@@ -660,6 +660,8 @@ def _cmd_pick(base_url: str, args: argparse.Namespace) -> int:
     _update_thread = threading.Thread(target=_bg_update_check, daemon=True)
     _update_thread.start()
 
+    # Before ensure_ready: it imports Playwright, which must not be upgraded under it.
+    auto_update_dependencies(_secrets_dir())
     if not ensure_ready(headers_path=headers_path, youtube_cookies_path=youtube_cookies,
                         state_path=_secrets_dir() / "setup_state.json"):
         return 1

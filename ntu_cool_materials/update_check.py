@@ -27,7 +27,7 @@ from pathlib import Path
 
 from . import console
 
-PYPI_JSON_URL = "https://pypi.org/pypi/get-class-material/json"
+PYPI_JSON_URL = "https://pypi.org/pypi/{package}/json"
 _CHECK_INTERVAL_SEC = 24 * 3600
 _UNKNOWN_VERSION = "0.0.0+unknown"
 
@@ -51,8 +51,8 @@ def is_newer(latest: str, current: str) -> bool:
     return _parse_version(latest) > _parse_version(current)
 
 
-def _fetch_latest_version(timeout: float) -> str:
-    request = urllib.request.Request(PYPI_JSON_URL, headers={"Accept": "application/json"})
+def _fetch_latest_version(timeout: float, package: str = "get-class-material") -> str:
+    request = urllib.request.Request(PYPI_JSON_URL.format(package=package), headers={"Accept": "application/json"})
     with urllib.request.urlopen(request, timeout=timeout) as response:
         data = json.loads(response.read().decode("utf-8"))
     return str(data["info"]["version"])
@@ -252,3 +252,43 @@ def ensure_yt_dlp_updated(
     ok, msg = update_yt_dlp(yt_dlp)
     print(f"  [yt-dlp] {msg}")
     return ok
+
+
+AUTO_UPDATE_PACKAGES = ("yt-dlp", "playwright")
+
+
+def auto_update_dependencies(secrets_dir: Path, *, fetch=None, run=subprocess.run) -> None:
+    """Upgrade yt-dlp / Playwright when PyPI has a newer release.
+
+    YouTube breaks old yt-dlp within weeks, so staying current matters more
+    than asking. PyPI is checked at most once a day per package (same cache
+    rules as `check_for_update`). Must run before anything imports Playwright
+    in this process. Never raises; a failed upgrade just leaves the old one.
+    """
+    import importlib.metadata
+    from .i18n import t
+    for package in AUTO_UPDATE_PACKAGES:
+        try:
+            current = importlib.metadata.version(package)
+        except Exception:
+            continue  # not installed: ensure_ready installs it
+        latest = check_for_update(
+            current,
+            cache_path=secrets_dir / f"update_check_{package}.json",
+            fetch=(lambda p=package: fetch(p)) if fetch else (lambda p=package: _fetch_latest_version(3.0, p)),
+        )
+        if not latest:
+            continue
+        print(t(f"  [{package}] 自動更新 {current} → {latest}...",
+                f"  [{package}] auto-updating {current} → {latest}..."))
+        try:
+            ok = run([sys.executable, "-m", "pip", "install", "--upgrade", package],
+                     capture_output=True, text=True, timeout=300).returncode == 0
+            if ok and package == "playwright":
+                # Each Playwright release pins its own Chromium build; fetch it now
+                # (output shown: it's a large download).
+                ok = run([sys.executable, "-m", "playwright", "install", "chromium"], timeout=900).returncode == 0
+        except Exception:
+            ok = False
+        print(t(f"  [{package}] 已更新" if ok else f"  [{package}] 更新失敗，繼續使用 {current}",
+                f"  [{package}] updated" if ok else f"  [{package}] update failed; keeping {current}"))
