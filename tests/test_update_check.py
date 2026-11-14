@@ -233,6 +233,29 @@ class AutoUpdateDependenciesTests(unittest.TestCase):
             update_check.auto_update_dependencies(Path(tmp), fetch=lambda _p: "9.0", run=run)
 
 
+class OfferSelfUpdateTests(unittest.TestCase):
+    def _offer(self, *, answer=True, pip_rc=0, after="1.1.0", editable=False):
+        from unittest import mock
+        run = mock.Mock(return_value=mock.Mock(returncode=pip_rc))
+        with mock.patch("ntu_cool_materials.update_check._is_editable_install", return_value=editable):
+            code = update_check.offer_self_update("1.1.0", ["pick", "--out", "x"], confirm=lambda _: answer,
+                                                  run=run, installed_version=lambda: after)
+        return code, [c.args[0][1:] for c in run.call_args_list]
+
+    def test_yes_upgrades_then_reruns_same_command(self) -> None:
+        code, cmds = self._offer()
+        self.assertEqual(code, 0)
+        self.assertEqual(cmds, [["-m", "pip", "install", "--upgrade", "get-class-material"],
+                                ["-m", "ntu_cool_materials", "pick", "--out", "x"]])
+
+    def test_carries_on_without_rerun(self) -> None:
+        for kwargs in [dict(answer=False), dict(editable=True), dict(pip_rc=1),
+                       dict(after="1.0.3")]:  # pip "succeeded" but stayed old: no rerun loop
+            code, cmds = self._offer(**kwargs)
+            self.assertIsNone(code, kwargs)
+            self.assertNotIn("ntu_cool_materials", [c[1] for c in cmds], kwargs)
+
+
 class ResolveYtDlpTests(unittest.TestCase):
     def test_finds_launcher_in_scripts_dir_when_not_on_path(self) -> None:
         import os

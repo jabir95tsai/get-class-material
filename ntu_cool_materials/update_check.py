@@ -292,3 +292,51 @@ def auto_update_dependencies(secrets_dir: Path, *, fetch=None, run=subprocess.ru
             ok = False
         print(t(f"  [{package}] 已更新" if ok else f"  [{package}] 更新失敗，繼續使用 {current}",
                 f"  [{package}] updated" if ok else f"  [{package}] update failed; keeping {current}"))
+
+
+def _is_editable_install(package: str = "get-class-material") -> bool:
+    """A dev's `pip install -e .` must not be replaced by the PyPI build."""
+    import importlib.metadata
+    try:
+        raw = importlib.metadata.distribution(package).read_text("direct_url.json")
+        return bool(raw and json.loads(raw).get("dir_info", {}).get("editable"))
+    except Exception:
+        return False
+
+
+def offer_self_update(latest: str, relaunch_argv: list[str], *, confirm=None, run=subprocess.run,
+                      installed_version=None) -> int | None:
+    """Ask [Y/n] to upgrade get-class-material to `latest`, then rerun the same
+    command on the new code (modules already imported here are the old ones).
+
+    Returns the rerun's exit code, or None to carry on with the current
+    version (declined, non-interactive, editable install, or upgrade failed).
+    """
+    from .i18n import t
+    if _is_editable_install():
+        return None
+    confirm = confirm or confirm_yt_dlp_update
+    if not confirm(t(f"\n💡 有新版本 {latest}，現在自動更新嗎？[Y/n]: ",
+                     f"\n💡 Version {latest} is available. Update now? [Y/n]: ")):
+        return None
+    if installed_version is None:
+        import importlib.metadata
+
+        def installed_version() -> str:
+            importlib.invalidate_caches()
+            return importlib.metadata.version("get-class-material")
+    try:
+        ok = run([sys.executable, "-m", "pip", "install", "--upgrade", "get-class-material"]).returncode == 0
+        # pip exits 0 without upgrading when the new release needs a newer Python.
+        ok = ok and not is_newer(latest, installed_version())
+    except Exception:
+        ok = False
+    if not ok:
+        print(t("  更新失敗，繼續使用目前版本。可手動執行: python -m pip install --upgrade get-class-material",
+                "  Update failed; continuing with the current version. Run: python -m pip install --upgrade get-class-material"))
+        return None
+    print(t(f"  已更新到 {latest}，重新啟動...\n", f"  Updated to {latest}; restarting...\n"))
+    try:
+        return run([sys.executable, "-m", "ntu_cool_materials", *relaunch_argv]).returncode
+    except KeyboardInterrupt:
+        return 130

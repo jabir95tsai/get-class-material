@@ -23,7 +23,7 @@ from .i18n import get_lang, set_lang, t
 from .session_client import AUTH_EXPIRED, CanvasSessionClient, read_headers_file
 from .spinner import spinner
 from .storage import ManifestStore
-from .update_check import auto_update_dependencies, check_for_update
+from .update_check import auto_update_dependencies, check_for_update, offer_self_update
 from .sync import SyncStats, sync_course_materials
 from . import console
 
@@ -65,6 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     _force_utf8_streams()
     parser = _build_parser()
     args = parser.parse_args(argv)
+    args.relaunch_argv = list(sys.argv[1:] if argv is None else argv)  # to rerun after a self-update
 
     if not getattr(args, "command", None):
         parser.print_help()
@@ -669,6 +670,9 @@ def _cmd_pick(base_url: str, args: argparse.Namespace) -> int:
     _update_thread.join(timeout=2.0)
     _newer = _update_result.get("latest")
     if _newer:
+        rerun_code = offer_self_update(_newer, getattr(args, "relaunch_argv", ["pick"]))
+        if rerun_code is not None:
+            return rerun_code
         print(t(
             f"\n💡 有新版本 {_newer}(你目前 {_version_string()})。"
             f"更新指令: python -m pip install --upgrade get-class-material\n",
