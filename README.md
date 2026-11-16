@@ -19,6 +19,8 @@ get-class-material
 
 > 舊指令 `ntu-cool-gcm` 仍可使用，功能完全相同。 / The old `ntu-cool-gcm` command still works.
 
+> 出現「應用程式控制原則已封鎖此檔案」? 改用 `python -X utf8 -m ntu_cool_materials pick`，詳見[這題](#q-顯示應用程式控制原則已封鎖此檔案winerror-4551)。 / Blocked by Windows Application Control? Run `python -X utf8 -m ntu_cool_materials pick` instead.
+
 更新到最新版,輸入:
 
 ```powershell
@@ -151,6 +153,8 @@ python -m pip install get-class-material
 ```powershell
 get-class-material
 ```
+
+> 出現「應用程式控制原則已封鎖此檔案」? 改用 `python -X utf8 -m ntu_cool_materials pick`，詳見[這題](#q-顯示應用程式控制原則已封鎖此檔案winerror-4551)。 / Blocked by Windows Application Control? Run `python -X utf8 -m ntu_cool_materials pick` instead.
 
 第一次跑會花幾分鐘,因為它會幫你裝幾個額外的東西:
 
