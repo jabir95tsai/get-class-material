@@ -334,8 +334,9 @@ def offer_self_update(latest: str, relaunch_argv: list[str], *, confirm=None, ru
     except Exception:
         ok = False
     if not ok:
-        print(t("  更新失敗，繼續使用目前版本。可手動執行: python -m pip install --upgrade get-class-material",
-                "  Update failed; continuing with the current version. Run: python -m pip install --upgrade get-class-material"))
+        hint = console.pip_install_hint("get-class-material")
+        print(t(f"  更新失敗，繼續使用目前版本。可手動執行: {hint}",
+                f"  Update failed; continuing with the current version. Run: {hint}"))
         return None
     print(t(f"  已更新到 {latest}，重新啟動...\n", f"  Updated to {latest}; restarting...\n"))
     try:

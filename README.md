@@ -29,7 +29,7 @@ python -m pip install --upgrade get-class-material
 
 ```bash
 python3 -m pip install get-class-material
-ntu-cool-gcm
+get-class-material
 ```
 
 Mac 內建的 Python 是 3.9,太舊;請先照 [Mac 使用者](#-mac-使用者) 裝新版 Python。
@@ -79,10 +79,10 @@ Mac 內建的 Python 是 3.9,太舊;請先照 [Mac 使用者](#-mac-使用者) �
 
    ```bash
    python3 -m pip install get-class-material
-   ntu-cool-gcm
+   get-class-material
    ```
 
-   如果顯示 `command not found: ntu-cool-gcm`,先跑一次 `python3 -m ntu_cool_materials doctor --fix`,它會把路徑加進 `~/.zprofile`;關掉終端機重開就能用。
+   如果顯示 `command not found: get-class-material`,先跑一次 `python3 -m ntu_cool_materials doctor --fix`,它會把路徑加進 `~/.zprofile`;關掉終端機重開就能用。
 
 5. **ffmpeg / Node.js(YouTube 影片才需要)用 Homebrew 安裝。** 沒有 Homebrew 的話,先到 <https://brew.sh> 複製那行安裝指令貼到終端機執行,然後:
 
