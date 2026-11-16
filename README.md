@@ -591,6 +591,8 @@ Windows 的 Smart App Control / 應用程式控制原則擋下了未簽章的執
 python -X utf8 -m ntu_cool_materials pick
 ```
 
+若是登入用的 Chromium 瀏覽器被擋,程式會自動改用電腦上安裝的 Google Chrome(有 Google 簽章,不會被擋);沒有 Chrome 的話請先[安裝](https://www.google.com/chrome/)。第一次改用 Chrome 需要重新登入一次。
+
 若是 `ffmpeg.exe` 或 `node.exe` 被擋,程式會提示並跳過 YouTube 階段(或畫質受限),其餘檔案照常下載;要完整功能需請電腦管理員放行該檔案。請不要為此關閉 Smart App Control(關掉後無法再開回來)。
 
 ### Q: PowerShell 顯示「無法載入指令碼,因為這個系統上已停用指令碼執行」

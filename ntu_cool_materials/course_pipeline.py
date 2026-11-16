@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .browser_session import launch_persistent_context
 from .announcements import (
     ANNOUNCEMENTS_JSON, canvas_file_links, html_to_markdown, migrate_legacy_announcements_json, write_announcements,
 )
@@ -819,8 +820,7 @@ def open_browser_session(
     manager = _sp()
     pw = manager.__enter__()
     try:
-        context = pw.chromium.launch_persistent_context(
-            user_data_dir=str(profile_dir), headless=headless, accept_downloads=False)
+        context = launch_persistent_context(pw, profile_dir, headless=headless, accept_downloads=False)
         page = context.pages[0] if context.pages else context.new_page()
         captured: dict[int, dict[str, Any]] = {}
         page.on("response", make_cool_video_response_handler(captured))
@@ -1142,8 +1142,7 @@ def capture_and_download_cool_videos(
     profile_dir.parent.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as p:
         def launch(visible: bool):
-            ctx = p.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir), headless=not visible, accept_downloads=False)
+            ctx = launch_persistent_context(p, profile_dir, headless=not visible, accept_downloads=False)
             _inject_saved_login(ctx, headers_path)
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
             captured: dict[int, dict[str, Any]] = {}

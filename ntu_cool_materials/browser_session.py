@@ -6,7 +6,33 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .console import python_cmd
+from .i18n import t
 from .storage import atomic_write_text
+
+# Smart App Control kills Playwright's unsigned Chromium with
+# STATUS_SYSTEM_INTEGRITY_POLICY_VIOLATION (0xC0E90002); Google-signed Chrome is allowed.
+_BLOCKED_BY_APP_CONTROL = "exitCode=3236495362"
+
+
+def launch_persistent_context(playwright, profile_dir: Path, **kwargs):
+    """Launch Playwright's Chromium, falling back to installed Google Chrome when Windows blocks it."""
+    try:
+        return playwright.chromium.launch_persistent_context(user_data_dir=str(profile_dir), **kwargs)
+    except Exception as exc:
+        if _BLOCKED_BY_APP_CONTROL not in str(exc):
+            raise
+    print(t("Chromium 被 Windows 應用程式控制原則封鎖,改用 Google Chrome…",
+            "Chromium is blocked by Windows Application Control; using Google Chrome instead…"))
+    try:
+        # Own profile dir: a Playwright-Chromium profile isn't guaranteed to open in branded Chrome.
+        return playwright.chromium.launch_persistent_context(
+            user_data_dir=str(profile_dir.with_name(profile_dir.name + "_chrome")), channel="chrome", **kwargs)
+    except Exception as exc:
+        raise RuntimeError(t(
+            f"Chromium 被 Windows 應用程式控制原則封鎖,也無法啟動 Google Chrome。請安裝 Chrome: https://www.google.com/chrome/ ({exc})",
+            f"Chromium is blocked by Windows Application Control and Google Chrome could not start. Install Chrome: https://www.google.com/chrome/ ({exc})",
+        )) from exc
+
 
 
 DEFAULT_BASE_URL = "https://cool.ntu.edu.tw"
@@ -79,8 +105,9 @@ def refresh_headers_file(
     headers_path.parent.mkdir(parents=True, exist_ok=True)
 
     with sync_playwright() as playwright:
-        context = playwright.chromium.launch_persistent_context(
-            user_data_dir=str(profile_dir),
+        context = launch_persistent_context(
+            playwright,
+            profile_dir,
             headless=headless,
             accept_downloads=False,
         )
