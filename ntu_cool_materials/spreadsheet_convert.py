@@ -12,11 +12,12 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .console import pip_install_hint
 from .i18n import t
 from .storage import atomic_write_text
 
 SPREADSHEET_TYPES = {".xlsx", ".xls"}
-INSTALL_HINT = 'python -m pip install "get-class-material[excel]"'
+INSTALL_HINT = pip_install_hint('"get-class-material[excel]"', upgrade=False)
 
 
 @dataclass

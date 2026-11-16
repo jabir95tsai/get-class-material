@@ -63,6 +63,7 @@ def _force_utf8_streams() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     _force_utf8_streams()
+    console.ensure_ca_bundle()
     parser = _build_parser()
     args = parser.parse_args(argv)
     args.relaunch_argv = list(sys.argv[1:] if argv is None else argv)  # to rerun after a self-update
@@ -675,9 +676,9 @@ def _cmd_pick(base_url: str, args: argparse.Namespace) -> int:
             return rerun_code
         print(t(
             f"\n💡 有新版本 {_newer}(你目前 {_version_string()})。"
-            f"更新指令: python -m pip install --upgrade get-class-material\n",
+            f"更新指令: {console.pip_install_hint('get-class-material')}\n",
             f"\n💡 Update available: {_newer} (you have {_version_string()}). "
-            f"Run: python -m pip install --upgrade get-class-material\n",
+            f"Run: {console.pip_install_hint('get-class-material')}\n",
         ))
 
     browser: BrowserSession | None = None

@@ -43,6 +43,8 @@ ntu-cool-materials download-course --course-id 60804 --skip-cool-videos --skip-y
 
 On Windows, run with `python -X utf8 -m ntu_cool_materials download-course ...` if the console mojibakes CJK course/file names.
 
+macOS is supported alongside Windows. Mac-specific behaviour: user-facing hints go through `console.python_cmd()` / `console.pip_install_hint()` (macOS has `python3`, not `python`), so never hardcode `python -m pip` in a message; `cli.main` calls `console.ensure_ca_bundle()`, which points `SSL_CERT_FILE` at certifi when python.org's macOS build has an empty trust store (no "Install Certificates" run yet); node/ffmpeg install via Homebrew (doctor hints at https://brew.sh when `brew` is missing); and the yt-dlp cookie retry also tries Vivaldi/Opera/Chromium/Safari on macOS (Safari needs Full Disk Access for the terminal). On this dev Mac, the system Python is 3.9, so use the uv-managed `.venv` (`.venv/bin/python -m unittest discover -s tests`).
+
 Auth — set one of:
 - `NTU_COOL_TOKEN` env var (Canvas access token), or
 - `--headers-file .secrets/ntu_cool_headers.txt` (raw DevTools headers, used when token issuance is disabled).

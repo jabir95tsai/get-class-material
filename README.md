@@ -25,6 +25,15 @@ get-class-material
 python -m pip install --upgrade get-class-material
 ```
 
+🍎 **Mac:** 打開「終端機」(Terminal),指令裡的 `python` 改成 `python3`:
+
+```bash
+python3 -m pip install get-class-material
+ntu-cool-gcm
+```
+
+Mac 內建的 Python 是 3.9,太舊;請先照 [Mac 使用者](#-mac-使用者) 裝新版 Python。
+
 ## 📦 會下載什麼
 
 | 類型 | 內容 | 存成 |
@@ -40,7 +49,7 @@ python -m pip install --upgrade get-class-material
 
 ## 📚 目錄
 
-- [新手完整教學](#新手完整教學)
+- [新手完整教學](#新手完整教學) · [Mac 使用者](#-mac-使用者)
 - [你會拿到什麼](#你會拿到什麼) · [下載後怎麼給 AI 用](#下載後怎麼給-ai-用)
 - [常見任務](#常見任務)
 - [自動匯入個人版 NotebookLM](#自動匯入個人版-notebooklm實驗功能)
@@ -49,6 +58,43 @@ python -m pip install --upgrade get-class-material
 ---
 
 ## 新手完整教學
+
+> 下面的步驟以 Windows 為例。**Mac 使用者請看 [這一段](#-mac-使用者)**,做完再回來看第 5 步的登入說明和之後的選課步驟。
+
+### 🍎 Mac 使用者
+
+整個流程跟 Windows 一樣,差別只有這幾點:
+
+1. **用「終端機」取代 PowerShell。** 按 `⌘ + 空白鍵` 打開 Spotlight,輸入 `終端機`(或 `Terminal`),按 Enter。
+2. **指令裡的 `python` 一律改成 `python3`。** Mac 沒有 `python` 這個指令。
+3. **安裝新版 Python。** macOS 內建的是 Python 3.9,不能用。到 <https://www.python.org/downloads/macos/> 下載 macOS 安裝檔(`.pkg`),一路按「繼續」裝完,然後**關掉終端機重開**。確認:
+
+   ```bash
+   python3 --version
+   ```
+
+   要看到 `Python 3.11` 以上。
+
+4. **安裝工具並執行:**
+
+   ```bash
+   python3 -m pip install get-class-material
+   ntu-cool-gcm
+   ```
+
+   如果顯示 `command not found: ntu-cool-gcm`,先跑一次 `python3 -m ntu_cool_materials doctor --fix`,它會把路徑加進 `~/.zprofile`;關掉終端機重開就能用。
+
+5. **ffmpeg / Node.js(YouTube 影片才需要)用 Homebrew 安裝。** 沒有 Homebrew 的話,先到 <https://brew.sh> 複製那行安裝指令貼到終端機執行,然後:
+
+   ```bash
+   brew install ffmpeg node
+   ```
+
+   之後 `ntu-cool-gcm` 也可以自動幫你跑這行。
+
+6. **YouTube 私人影片用 Safari 登入的話**:工具會問要不要讀瀏覽器的登入狀態。Chrome / Edge / Firefox 直接可用;Safari 需要到「系統設定 → 隱私權與安全性 → 完整磁碟取用權限」把「終端機」打開,否則會讀不到。
+
+> 用 Homebrew 裝的 Python(`brew install python`)跑 `pip install` 會顯示 `externally-managed-environment`。改用 `pipx install get-class-material`(先 `brew install pipx`),或直接用 python.org 的安裝檔。
 
 ### 第 1 步 — 確認你有沒有 Python
 
@@ -109,8 +155,8 @@ get-class-material
 第一次跑會花幾分鐘,因為它會幫你裝幾個額外的東西:
 
 - **Chromium 瀏覽器**(讓工具能幫你登入,大約 200MB)
-- **ffmpeg**(合併 YouTube 影片用,大約 240MB,Windows 用 `winget` 安裝)
-- **Node.js**(處理 YouTube 影片用,Windows 用 `winget` 安裝)
+- **ffmpeg**(合併 YouTube 影片用,大約 240MB,Windows 用 `winget`、Mac 用 Homebrew 安裝)
+- **Node.js**(處理 YouTube 影片用,Windows 用 `winget`、Mac 用 Homebrew 安裝)
 
 ffmpeg 和 Node.js 只有下載 YouTube 影片才需要,所以工具會先問你 `要現在自動安裝嗎? [Y/n]`,直接按 Enter 就是安裝。選 `n` 的話 30 天內不會再問,PDF / Page / 上課影片照常下載;之後想裝隨時可以跑 `ntu-cool-materials doctor --fix`。
 
@@ -228,7 +274,7 @@ C:\Users\你\Documents\ntu-cool-gcm_material\
 - **`announcements/announcements.md`** — 課程公告全文,每次執行都會更新
 - **`course_overview.md`** — 整門課的目錄索引,列出每週有什麼、檔案放在哪。**直接拖到 AI 就可以叫它幫你做學習計畫**
 
-資料夾裡以 `.` 開頭的檔案(`.ntu_cool_materials.sqlite3`、`.media-cache` 等)是工具的紀錄,在 Windows 上會自動隱藏,不要刪除。
+資料夾裡以 `.` 開頭的檔案(`.ntu_cool_materials.sqlite3`、`.media-cache` 等)是工具的紀錄,在 Windows 上會自動隱藏(Mac 的 Finder 本來就不顯示 `.` 開頭的檔案),不要刪除。
 
 ---
 
@@ -347,7 +393,7 @@ get-class-material --version
 💡 有新版本 1.0.1(你目前 1.0.0)。更新指令: python -m pip install --upgrade get-class-material
 ```
 
-照著跑那行 `python -m pip install --upgrade get-class-material` 就更新好了。
+照著跑那行 `python -m pip install --upgrade get-class-material` 就更新好了(Mac 上提示會直接顯示成 `python3`)。
 
 ### YouTube 不公開影片下載失敗
 
@@ -361,12 +407,14 @@ get-class-material --version
 要用你瀏覽器裡已登入的 YouTube 帳號重試嗎? [y/N]
 ```
 
-按 `y`,工具就會**直接讀取你平常用的瀏覽器(Chrome / Edge / Firefox …)裡已經登入的 YouTube 帳號**來重試——你不用再登入一次。
+按 `y`,工具就會**直接讀取你平常用的瀏覽器(Chrome / Edge / Firefox / Brave …;Mac 上還會試 Vivaldi / Opera / Chromium / Safari)裡已經登入的 YouTube 帳號**來重試——你不用再登入一次。
 
 > 💡 **為什麼是讀瀏覽器、不是跳出來登入?**
 > Google 會擋「被程式控制的瀏覽器」登入(會顯示「這個瀏覽器可能不安全」),所以直接讀你平常瀏覽器裡的登入狀態最穩。
 >
 > ⚠ 如果你用 **Chrome / Edge**,重試前請**先完全關掉那個瀏覽器**——瀏覽器開著的時候 cookie 檔會被鎖住,讀不到。Firefox 通常不用關。
+>
+> 🍎 Mac 用 **Safari** 的話,要先到「系統設定 → 隱私權與安全性 → 完整磁碟取用權限」把「終端機」打開,否則讀不到 Safari 的 cookie。
 >
 > 前提是你平常那個瀏覽器**有登入會看到這些影片的 Google 帳號**(通常就是你的台大 Google 或個人帳號)。
 
@@ -385,6 +433,8 @@ python -m pip install "get-class-material[notebooklm]"
 notebooklm login          # 第一次:在跳出的 Chrome 視窗登入 Google
 get-class-material --notebooklm # 選課、下載,完成後直接匯入
 ```
+
+🍎 Mac:`python` 改成 `python3`。Google 可能擋自動化瀏覽器登入,有裝 Google Chrome 的話改跑 `notebooklm login --browser chrome`(匯入時登入過期,工具自己重開登入也會自動用 Chrome)。
 
 已經下載過的課程,執行 `ntu-cool-materials notebooklm` 就能從清單選課匯入。
 
@@ -560,6 +610,10 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 2. Node.js: <https://nodejs.org/>(下載 LTS 版)
 
 裝完關掉 PowerShell 重開,再跑 `get-class-material`。
+
+### Q: Mac 上出現 `CERTIFICATE_VERIFY_FAILED`
+
+python.org 的 Mac 版 Python 預設沒有 SSL 憑證。工具會自動改用 `certifi` 的憑證,一般不會遇到;如果其他程式也出現這個錯誤,打開「應用程式 → Python 3.x」資料夾,點兩下 **Install Certificates.command** 即可。
 
 ### Q: NTU COOL 登入過期了
 

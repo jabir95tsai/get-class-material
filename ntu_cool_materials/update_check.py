@@ -205,8 +205,9 @@ def update_yt_dlp(yt_dlp: str = "yt-dlp") -> tuple[bool, str]:
         except Exception:
             pass
 
-    return False, t("更新失敗，請手動執行 python -m pip install --upgrade yt-dlp",
-                    "update failed; run python -m pip install --upgrade yt-dlp manually")
+    hint = console.pip_install_hint("yt-dlp")
+    return False, t(f"更新失敗，請手動執行 {hint}",
+                    f"update failed; run {hint} manually")
 
 
 def confirm_yt_dlp_update(prompt: str, *, input_fn=None) -> bool:
@@ -246,8 +247,9 @@ def ensure_yt_dlp_updated(
         f"  [yt-dlp] 目前版本 ({version}) 已發布 {age} 天，YouTube 下載可能失敗。現在更新嗎？[Y/n]: ",
         f"  [yt-dlp] current version ({version}) is {age} days old; YouTube downloads may fail. Update now? [Y/n]: ",
     )):
-        print(t("  [yt-dlp] 略過更新；可稍後執行 python -m pip install --upgrade yt-dlp",
-                "  [yt-dlp] update skipped; run python -m pip install --upgrade yt-dlp later"))
+        hint = console.pip_install_hint("yt-dlp")
+        print(t(f"  [yt-dlp] 略過更新；可稍後執行 {hint}",
+                f"  [yt-dlp] update skipped; run {hint} later"))
         return False
     ok, msg = update_yt_dlp(yt_dlp)
     print(f"  [yt-dlp] {msg}")

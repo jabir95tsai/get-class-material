@@ -49,7 +49,9 @@ def trigger_interactive_login(storage_path: Path | None = None) -> bool:
             "Finish the Google login in that window; it closes by itself and the import continues."))
 
     cmd = [sys.executable, "-m", "notebooklm", "login"]
-    if os.name == "nt":
+    # Google blocks sign-in on Playwright's own Chromium, so use the real Chrome
+    # when we know it's there (macOS: only if the app is installed).
+    if os.name == "nt" or (sys.platform == "darwin" and Path("/Applications/Google Chrome.app").exists()):
         cmd.extend(["--browser", "chrome"])
     cmd.extend(["--browser-timeout", "300"])
 

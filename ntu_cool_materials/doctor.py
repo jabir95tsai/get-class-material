@@ -25,6 +25,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .console import pip_install_hint
 from .i18n import t
 
 
@@ -72,10 +73,16 @@ def _blocked_check(name: str) -> CheckResult:
 def _platform_install_hint(*, mac: str, linux: str, windows: str) -> str:
     sys_ = platform.system()
     if sys_ == "Darwin":
+        if mac.startswith("brew ") and not _has("brew"):
+            return t(f"{mac} (需先安裝 Homebrew: {_BREW_URL})",
+                     f"{mac} (install Homebrew first: {_BREW_URL})")
         return mac
     if sys_ == "Windows":
         return windows
     return linux
+
+
+_BREW_URL = "https://brew.sh"
 
 
 def _has(cmd: str) -> bool:
@@ -118,7 +125,8 @@ def _install_winget(package: str) -> bool:
 
 def _install_brew(package: str) -> bool:
     if not _has("brew"):
-        print("    (找不到 Homebrew,請依照上方提示手動安裝)")
+        print(t(f"    (找不到 Homebrew。請先到 {_BREW_URL} 複製安裝指令貼到「終端機」執行,再重跑 doctor --fix)",
+                f"    (Homebrew not found. Install it from {_BREW_URL} in Terminal, then re-run doctor --fix)"))
         return False
     return _stream_subprocess(["brew", "install", package], f"用 Homebrew 安裝 {package}")
 
@@ -593,8 +601,8 @@ def run_doctor(
         _newer = check_for_update(__version__, cache_path=_secrets_dir() / "update_check.json")
         if _newer:
             print(t(
-                f"  💡 有新版本 {_newer},更新: python -m pip install --upgrade get-class-material",
-                f"  💡 Update available: {_newer} — python -m pip install --upgrade get-class-material",
+                f"  💡 有新版本 {_newer},更新: {pip_install_hint('get-class-material')}",
+                f"  💡 Update available: {_newer} — {pip_install_hint('get-class-material')}",
             ))
     except Exception:
         pass

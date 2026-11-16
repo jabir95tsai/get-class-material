@@ -504,7 +504,13 @@ def _cookie_browser_candidates() -> list[tuple[str, Path]]:
             ("chrome", appsup / "Google" / "Chrome"),
             ("edge", appsup / "Microsoft Edge"),
             ("brave", appsup / "BraveSoftware" / "Brave-Browser"),
+            ("vivaldi", appsup / "Vivaldi"),
+            ("opera", appsup / "com.operasoftware.Opera"),
+            ("chromium", appsup / "Chromium"),
             ("firefox", appsup / "Firefox" / "Profiles"),
+            # Last: the default macOS browser, but yt-dlp can only read its
+            # cookie file when the terminal has Full Disk Access.
+            ("safari", home / "Library" / "Containers" / "com.apple.Safari"),
         ]
     cfg = home / ".config"
     return [

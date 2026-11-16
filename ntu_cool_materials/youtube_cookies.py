@@ -5,6 +5,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .console import python_cmd
+
 
 YOUTUBE_URL = "https://www.youtube.com/"
 
@@ -56,7 +58,7 @@ def export_youtube_cookies(
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
         raise YouTubeCookieError(
-            "Playwright is not installed. Run: python -m pip install playwright && python -m playwright install chromium"
+            f"Playwright is not installed. Run: {python_cmd()} -m pip install playwright && {python_cmd()} -m playwright install chromium"
         ) from exc
 
     profile_dir.parent.mkdir(parents=True, exist_ok=True)

@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from .console import python_cmd
 from .storage import atomic_write_text
 
 
@@ -60,7 +61,7 @@ def refresh_headers_file(
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
         raise BrowserSessionError(
-            "Playwright is not installed. Run: python -m pip install playwright && python -m playwright install chromium"
+            f"Playwright is not installed. Run: {python_cmd()} -m pip install playwright && {python_cmd()} -m playwright install chromium"
         ) from exc
 
     base_url = base_url.rstrip("/")
