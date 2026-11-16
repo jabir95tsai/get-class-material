@@ -4,755 +4,175 @@
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-> **一行指令,把 NTU COOL 整門課的講義、簡報、公告、上課影片全部下載到電腦,方便丟給 AI 複習。**
->
-> One command to download an entire NTU COOL course — slides, PDFs, pages, announcements and lecture videos — for AI-assisted studying.
+一行指令下載 NTU COOL 整門課的講義、公告、頁面文字與上課影片，依週次整理，方便丟給 AI 複習。  
+One command to download NTU COOL slides, pages, announcements, and videos by week.
 
-## ⚡ 快速開始
+---
 
-工具列搜尋 PowerShell 並開啟,輸入:
+## 開始使用（Windows）
+
+1. 按 `Win` 鍵 → 輸入 `PowerShell` → 按 `Enter`。
+2. 複製貼上以下兩行，按 `Enter`：
 
 ```powershell
 python -m pip install get-class-material
 get-class-material
 ```
 
-> 舊指令 `ntu-cool-gcm` 仍可使用，功能完全相同。 / The old `ntu-cool-gcm` command still works.
 
-> 出現「應用程式控制原則已封鎖此檔案」? 改用 `python -X utf8 -m ntu_cool_materials pick`，詳見[這題](#q-顯示應用程式控制原則已封鎖此檔案winerror-4551)。 / Blocked by Windows Application Control? Run `python -X utf8 -m ntu_cool_materials pick` instead.
+> - **找不到 `python`？** 到 <https://www.python.org/downloads/> 安裝，務必勾選底部的 **`Add Python to PATH`**，裝完**重開 PowerShell**。
+> - **檔案存放在哪？** 預設在「文件 (Documents)」裡的 `ntu-cool-gcm_material`。
+> - **下載內容：** 講義附件（保留原格式）、頁面（`.md`）、公告（`announcements.md`）、YouTube／上課錄影（`.mp4`）、目錄索引（`course_overview.md`，可直接拖進 ChatGPT / Gemini / NotebookLM）。
+> - **補抓與更新：** 補抓新檔案直接重跑 `get-class-material`（舊檔自動跳過）；更新版本跑 `python -m pip install --upgrade get-class-material`。
 
-更新到最新版,輸入:
+---
 
-```powershell
-python -m pip install --upgrade get-class-material
-```
+## 開始使用（MacOS）
 
-🍎 **Mac:** 打開「終端機」(Terminal),指令裡的 `python` 改成 `python3`:
+Mac 內建 Python 3.9 不能用，請先到 <https://www.python.org/downloads/macos/> 安裝新版（不要用 Homebrew Python），完成後開「終端機」執行：
 
 ```bash
 python3 -m pip install get-class-material
 get-class-material
 ```
 
-Mac 內建的 Python 是 3.9,太舊;請先照 [Mac 使用者](#-mac-使用者) 裝新版 Python。
-
-## 📦 會下載什麼
-
-| 類型 | 內容 | 存成 |
-|---|---|---|
-| 📄 講義與附件 | PDF、PPT、Word、Excel、Zip… | 原始檔(保留副檔名) |
-| 📝 Page 頁面 | 老師寫在 COOL 頁面的文字 | `.md` |
-| 📢 課程公告 | 全部公告全文 | `announcements/announcements.md` |
-| ▶️ YouTube 影片 | 課程裡連到的 YouTube | `.mp4`(中文標題) |
-| 🎥 上課錄影 | NTU COOL video | `.mp4` |
-| 🗂 課程索引 | 每週有什麼、檔案在哪 | `course_overview.md` |
-
-依週次自動分資料夾(`week1/`、`week2/`…)。可選擇[一鍵匯入 NotebookLM](#自動匯入個人版-notebooklm實驗功能)。
-
-## 📚 目錄
-
-- [新手完整教學](#新手完整教學) · [Mac 使用者](#-mac-使用者)
-- [你會拿到什麼](#你會拿到什麼) · [下載後怎麼給 AI 用](#下載後怎麼給-ai-用)
-- [常見任務](#常見任務)
-- [自動匯入個人版 NotebookLM](#自動匯入個人版-notebooklm實驗功能)
-- [常見問題](#常見問題) · [安全與隱私](#安全與隱私提醒) · [進階指令與開發者](#進階其他指令)
+- 出現 `command not found`：執行 `python3 -m ntu_cool_materials doctor --fix` 後重開終端機。
+- Safari 私人 YouTube 影片：需於「系統設定 → 隱私權與安全性 → 完整磁碟取用權限」開啟「終端機」。
+- 更新版本：`python3 -m pip install --upgrade get-class-material`。
 
 ---
 
-## 新手完整教學
-
-> 下面的步驟以 Windows 為例。**Mac 使用者請看 [這一段](#-mac-使用者)**,做完再回來看第 5 步的登入說明和之後的選課步驟。
-
-### 🍎 Mac 使用者
-
-整個流程跟 Windows 一樣,差別只有這幾點:
-
-1. **用「終端機」取代 PowerShell。** 按 `⌘ + 空白鍵` 打開 Spotlight,輸入 `終端機`(或 `Terminal`),按 Enter。
-2. **指令裡的 `python` 一律改成 `python3`。** Mac 沒有 `python` 這個指令。
-3. **安裝新版 Python。** macOS 內建的是 Python 3.9,不能用。到 <https://www.python.org/downloads/macos/> 下載 macOS 安裝檔(`.pkg`),一路按「繼續」裝完,然後**關掉終端機重開**。確認:
-
-   ```bash
-   python3 --version
-   ```
-
-   要看到 `Python 3.11` 以上。
-
-4. **安裝工具並執行:**
-
-   ```bash
-   python3 -m pip install get-class-material
-   get-class-material
-   ```
-
-   如果顯示 `command not found: get-class-material`,先跑一次 `python3 -m ntu_cool_materials doctor --fix`,它會把路徑加進 `~/.zprofile`;關掉終端機重開就能用。
-
-5. **ffmpeg / Node.js(YouTube 影片才需要)用 Homebrew 安裝。** 沒有 Homebrew 的話,先到 <https://brew.sh> 複製那行安裝指令貼到終端機執行,然後:
-
-   ```bash
-   brew install ffmpeg node
-   ```
-
-   之後 `ntu-cool-gcm` 也可以自動幫你跑這行。
-
-6. **YouTube 私人影片用 Safari 登入的話**:工具會問要不要讀瀏覽器的登入狀態。Chrome / Edge / Firefox 直接可用;Safari 需要到「系統設定 → 隱私權與安全性 → 完整磁碟取用權限」把「終端機」打開,否則會讀不到。
-
-> 用 Homebrew 裝的 Python(`brew install python`)跑 `pip install` 會顯示 `externally-managed-environment`。改用 `pipx install get-class-material`(先 `brew install pipx`),或直接用 python.org 的安裝檔。
-
-### 第 1 步 — 確認你有沒有 Python
-
-**Python** 是這個工具運作所需的程式語言環境。
-
-打開 PowerShell(往下兩段教怎麼打開),貼上這行按 Enter:
-
-```powershell
-python --version
-```
-
-如果看到類似 `Python 3.13.x`,而且 **3 後面那個數字 ≥ 11**,就跳到第 3 步。
-
-如果看到「找不到」、「無法辨識的指令」,或顯示的版本是 3.10 以下,先做第 2 步。
-
-### 第 2 步 — 安裝 Python
-
-到 <https://www.python.org/downloads/> 下載最新版,執行安裝程式。
-
-> ⚠ **非常重要:** 安裝畫面第一頁的最下面有個小勾選 **「Add Python to PATH」** 或 **「Add python.exe to PATH」**,**請勾起來**。沒勾的話 PowerShell 之後找不到 python,就要重裝。
-
-裝完之後**關掉所有 PowerShell 視窗,再開一次新的**(這樣才會吃到新的 PATH 設定)。再跑一次第 1 步確認。
-
-### 第 3 步 — 打開 PowerShell
-
-**PowerShell** 是 Windows 內建的「黑黑的命令列視窗」。
-
-最快的開法:
-
-1. 按鍵盤 **`Win` 鍵**(就是有 Windows 標誌那顆)
-2. 直接打 `PowerShell`
-3. 按 Enter
-
-或是用滑鼠:**開始選單 → 搜尋 PowerShell → 點開**。
-
-開啟後你會看到一個藍色或黑色的視窗,最後一行是類似 `PS C:\Users\你的名字>` 的字。游標在那邊閃。
-
-**從現在起,所有「貼上指令」都是貼到這個視窗裡然後按 Enter。**
-
-### 第 4 步 — 安裝這個工具
-
-在 PowerShell 貼上:
-
-```powershell
-python -m pip install get-class-material
-```
-
-按 Enter,等它跑完(會看到一堆 `Collecting...`、`Downloading...`、`Installing...`)。最後看到 `Successfully installed ...` 就 OK。
-
-> **`pip` 是什麼?** 它是 Python 內建的「套件下載器」。安裝 Python 時會跟著一起裝。如果這行說「找不到 pip」,通常代表 Python 沒裝好或沒勾「Add Python to PATH」,回到第 2 步重裝。
-
-### 第 5 步 — 第一次跑工具
-
-```powershell
-get-class-material
-```
-
-> 出現「應用程式控制原則已封鎖此檔案」? 改用 `python -X utf8 -m ntu_cool_materials pick`，詳見[這題](#q-顯示應用程式控制原則已封鎖此檔案winerror-4551)。 / Blocked by Windows Application Control? Run `python -X utf8 -m ntu_cool_materials pick` instead.
-
-第一次跑會花幾分鐘,因為它會幫你裝幾個額外的東西:
-
-- **Chromium 瀏覽器**(讓工具能幫你登入,大約 200MB)
-- **ffmpeg**(合併 YouTube 影片用,大約 240MB,Windows 用 `winget`、Mac 用 Homebrew 安裝)
-- **Node.js**(處理 YouTube 影片用,Windows 用 `winget`、Mac 用 Homebrew 安裝)
-
-ffmpeg 和 Node.js 只有下載 YouTube 影片才需要,所以工具會先問你 `要現在自動安裝嗎? [Y/n]`,直接按 Enter 就是安裝。選 `n` 的話 30 天內不會再問,PDF / Page / 上課影片照常下載;之後想裝隨時可以跑 `ntu-cool-materials doctor --fix`。
-
-> 如果跳出「使用者帳戶控制」要求權限,點「是」(因為 winget 在裝系統工具)。
-
-如果你看到 `winget` 不存在,工具會印出手動安裝的指令給你。Windows 11 大多有內建 `winget`。
-
-裝完後,工具會跳出一個 **Chromium 瀏覽器視窗**,自動連到 NTU COOL 登入頁。**用平常的學號密碼登入**。
-
-> 🔒 **密碼安全提醒:**
-> - 密碼**只**輸入在這個瀏覽器登入頁,跟你平常用 Chrome 登入一樣
-> - 工具本身**從來不會看到密碼**(它只在登入完拿瀏覽器的 cookie)
-> - 不要把密碼貼在 PowerShell、聊天室、或任何其他地方
-
-登入完成並成功讀取課程清單後，工具會自動關閉 NTU COOL 瀏覽器視窗；你不需要保留登入頁面。
-若選到含 NTU cool-video 的課程，程式會在背景(看不到視窗)沿用剛才的登入取得影片資訊；只有登入已過期時才會再跳出登入視窗。
-
-### 第 6 步 — 選課
-
-登入完成後,工具要連線 NTU COOL 抓你的課程清單。這時你會看到一個會轉的小橫槓:
+## 疑難排解
 
 ```text
-- 連線 NTU COOL 中…
-| 讀取課程清單中…
+執行時卡關了？從上往下問自己：
+
+1. 輸入指令就出現「找不到 python / pip」或「無法辨識」？
+   ├─ Yes ─▶【解方 A】安裝 Python 3.11+ 並勾選 Add Python to PATH
+   └─ No  ─▶ 往下看第 2 題
+
+2. 出現「應用程式控制原則已封鎖」(WinError 4551) 或「已停用指令碼執行」？
+   ├─ Yes（封鎖檔案 / 4551）─▶【解方 B】改用 python -X utf8 指令 / Chrome 備援
+   ├─ Yes（已停用指令碼）   ─▶【解方 C】調整 PowerShell 執行原則
+   └─ No                    ─▶ 往下看第 3 題
+
+3. 卡在自動安裝元件（找不到 winget、缺 ffmpeg / Node.js、Mac command not found）？
+   ├─ Yes（找不到 winget）              ─▶【解方 D】補裝 App Installer 或手動裝工具
+   ├─ Yes（command not found / 缺元件） ─▶【解方 E】執行 doctor --fix 檢查與自動修復
+   └─ No                                ─▶ 往下看第 4 題
+
+4. 出現「CERTIFICATE_VERIFY_FAILED」（Mac SSL 憑證錯誤）？
+   ├─ Yes ─▶【解方 F】執行 Mac Python 的 Install Certificates.command
+   └─ No  ─▶ 往下看第 5 題
+
+5. 可以選課，但 YouTube 影片下載失敗？
+   ├─ Yes ─▶【解方 G】關閉 Chrome / Edge 後按 y 重試（或開 Safari 權限）
+   └─ No  ─▶ 往下看第 6 題
+
+6. 下載到一半斷網、當掉，或提示「登入已過期」？
+   └─ Yes ─▶【解方 H】直接重跑（自動續傳），或加 --refresh-session 強制重登
 ```
-
-**這是正常的**,代表它正在跟伺服器要資料(網路慢的話會轉久一點),不是當掉。轉完就會列出你的課程,像這樣:
-
-```text
-找到 5 門課程:
-
-  1) 日文一下 Japanese (Ⅰ) (2)
-  2) 作業管理 Operations Management
-  3) 音樂、演化與大腦 Music, Evolution and the Brain
-  4) 組織行為學 Organizational Behavior
-  5) 管理科學模式 Management Science Model
-
-選擇課程 (1-5 可空格多選如 "1 3 5", h = 過去課程, a = 下載全部, en = English, q = 離開)
->
-```
-
-可以這樣輸入:
-
-| 你輸入 | 結果 |
-|---|---|
-| `3` | 下載第 3 門 |
-| `1 3 5` | 一次下載第 1、3、5 門(空格分隔) |
-| `1,2,4` | 也可以用逗號 |
-| `a` | 下載全部 5 門 |
-| `h` | 進入過去學期的選單,選舊課程 |
-| `en` | 切換成英文介面 |
-| `q` | 離開 |
-
-按 Enter 後,工具就會開始幫你抓檔案。檔案大的影片會看到進度條:
-
-```text
-[##########----] 47%  12.3 / 26.1 MB  3-1 演化的證據.mp4
-```
-
-### 第 7 步 — 下載完成
-
-跑完會看到:
-
-```text
-完成。
-  公告:        新增 5、跳過 0、失敗 0
-  檔案:        新增 6、跳過 0、失敗 0
-  Page:        新增 3、跳過 0、失敗 0
-  YouTube:     新增 7、跳過 0、失敗 0
-  上課影片:    新增 4、跳過 0、失敗 0
-
-檔案存放位置:
-  C:\Users\你\Documents\ntu-cool-gcm_material\音樂、演化與大腦 Music, Evolution and the Brain (57544)
-```
-
-**最後那行就是你的檔案放在哪。** 用檔案總管打開就能看到。
-
-之後會問你:
-
-```text
-下一個動作: c = 繼續下載別的 / a = 下載全部 / h = 過去課程 / en = English / q = 離開
-> 
-```
-
-要再下載另一門就 `c`,要結束就 `q`(會自動關閉 PowerShell 視窗;不想關可以在啟動時加 `--keep-terminal`)。
-
----
-
-## 你會拿到什麼
-
-下載到的目錄結構長這樣:
-
-```
-C:\Users\你\Documents\ntu-cool-gcm_material\
-└── 音樂、演化與大腦 Music, Evolution and the Brain (57544)\
-    ├── course_overview.md        ← 這份課程的目錄索引(可以餵給 AI)
-    ├── announcements\
-    │   └── announcements.md      ← 所有課程公告
-    ├── week1\
-    │   ├── SYLBS_班次1.pdf
-    │   ├── 成績計算.xlsx
-    │   ├── 成績計算.xlsx.md      ← Excel 轉成的 Markdown(NotebookLM 用)
-    │   └── 1-1 生物音樂學簡介.mp4
-    ├── week2\
-    │   ├── 2-1-1 伊甸園外的生命長河.pdf
-    │   ├── 2-3-2 緊拉慢唱的妙用.md
-    │   └── attachments\          ← Page 裡連到的 Canvas 檔案
-    └── week3\
-        └── ...
-```
-
-- **`.pdf` / `.pptx` / `.docx` / `.xlsx` …** — 老師上傳的原始檔,保留原本的副檔名
-- **`.md`** — Page 文字內容(VS Code、Typora、Obsidian 都能讀)
-- **`.mp4`** — YouTube 影片 + NTU 上課錄影,都用人看得懂的中文標題
-- **`announcements/announcements.md`** — 課程公告全文,每次執行都會更新
-- **`course_overview.md`** — 整門課的目錄索引,列出每週有什麼、檔案放在哪。**直接拖到 AI 就可以叫它幫你做學習計畫**
-
-資料夾裡以 `.` 開頭的檔案(`.ntu_cool_materials.sqlite3`、`.media-cache` 等)是工具的紀錄,在 Windows 上會自動隱藏(Mac 的 Finder 本來就不顯示 `.` 開頭的檔案),不要刪除。
-
----
-
-## 下載後怎麼給 AI 用
-
-### PDF
-直接拖到 ChatGPT、Gemini、Claude 的對話框,然後問:
-- 「幫我整理這份講義的重點」
-- 「出 5 題選擇題」
-- 「這份跟我之前丟的那份有什麼差別?」
-
-### Markdown(`.md` 檔)
-- **NotebookLM**: 把整個 `.md` 檔當「來源」上傳,可以一次餵很多份
-- **ChatGPT / Gemini**: 用文字編輯器開,複製貼上即可
-
-### 影片(`.mp4`)
-影片本身大多 AI 工具不能直接吃,要先轉成文字:
-- 用 **MacWhisper**(Mac)、**Whisper Desktop**(Windows)、或 OpenAI 線上 Whisper
-- 轉好的逐字稿再丟給 AI 做摘要
-
-### 整門課一起
-把整個課程資料夾的 `course_overview.md` 跟幾份重點 PDF 一起拖到 NotebookLM,叫它「根據這些教材幫我做考試重點摘要」。
-
----
-
-## 常見任務
-
-### 登入過期了
-
-**多數情況你不用做任何事** — 直接跑 `get-class-material`,工具會在連線時自動發現登入過期,並馬上幫你開瀏覽器重新登入(你會看到「登入已過期,開啟瀏覽器重新登入…」)。
-
-如果想手動強制重新登入,也可以加:
-
-```powershell
-get-class-material --refresh-session
-```
-
-### 只想下載 PDF,不要影片
-
-```powershell
-get-class-material --skip-youtube --skip-cool-videos
-```
-
-下載課程時預設一併抓取所有可見公告（標題、作者、日期與全文），存放於課程資料夾的 `announcements/announcements.md` 與 `announcements/.announcements.json`（隱藏檔）。每次執行會重新抓取，以更新老師修改過的公告；課程總覽亦提供公告連結。可用 `--skip-announcements` 略過。
-
-可以混搭:`--skip-announcements`、`--skip-pdfs`、`--skip-pages`、`--skip-youtube`、`--skip-cool-videos`。
-
-### 換存檔位置
-
-```powershell
-get-class-material --out D:\我的課程
-```
-
-預設是在你的「文件 / Documents」資料夾底下的 `ntu-cool-gcm_material/`。
-
-如果你的目前資料夾已經有舊版建立的 `ntu-cool-gcm_material/`,工具會沿用那個資料夾,避免把舊檔案拆散。
-
-### Word / PowerPoint / Excel / Zip 等非 PDF 檔
-
-預設會**全部下載**，並先查詢 Canvas 檔案資料，保留原本的副檔名，包括 Word、PowerPoint、Excel、Zip、圖片、影片及程式碼檔案。若來源完全沒有副檔名，仍沿用 `.pdf` 備援命名。
-
-### 增量更新、檢查完整性與下載速度
-
-- 使用來源 ID 與課程內的 `.ntu_cool_materials.sqlite3` 記錄檔案版本、大小、SHA-256 和實際路徑；同名教材不會互相略過，模組改變順序也會保留原有路徑。
-- Files 會查詢遠端更新資訊，Pages 每次重新取得內容。沒有變動的教材會跳過；本機大小不符時自動補抓。
-- 舊版下載的檔案沒有來源紀錄時，第一次會就地沿用：一般檔案需大小與 Canvas 相符，影片需是可播放的 MP4，否則才重新下載。請保留 manifest，讓後續更新能正確辨識檔案。
-- 預設同時下載 3 個 Canvas 檔案，可用 `--workers 1` 改為依序下載，最多設定 4。LTI 瀏覽器操作仍依序執行。
-- YouTube 依 video ID 補抓缺少的影片，並利用課程內的 `.media-cache/` 避免同一影片跨週重抓。快取與週次資料夾的影片是硬連結，不會多占磁碟空間；不支援硬連結的磁碟（例如 exFAT 隨身碟）則改為複製，完成後刪除快取。
-- 需要下載 YouTube 且 yt-dlp 已超過 60 天未更新，或影片下載失敗時，會先詢問是否用 pip 更新 yt-dlp（預設是）；非互動執行不會自動更新。
-- Pages／公告保留連結與圖片網址，並抓取其中可識別、同一 Canvas 網站的檔案附件。外部網站只保留連結，不會遞迴下載整個網站。
-- 每次正常完成流程會寫入 `.download_report.json`（與 `.ntu_cool_materials.sqlite3`、`.notebooklm-import.json` 等紀錄檔在 Windows 上會自動設為隱藏檔）。部分失敗會回傳退出碼 1；互動選單只將成功的課程標記完成。非互動執行遇到登入過期會失敗退出，可加 `--refresh-session` 重新登入。
-
-```powershell
-# 額外檢查本機內容雜湊 / Verify local SHA-256 before skipping
-get-class-material --verify-files
-
-# 限制並行數 / Limit simultaneous file transfers
-ntu-cool-materials download-course --course-id 57544 --workers 2
-```
-
-影片通常以來源 ID 識別；如果平台直接替換同一 ID 的影片且未提供更新資訊，無法僅靠本機 manifest 察覺遠端內容改變。刪除該本機影片（YouTube 也須刪除 `.media-cache/youtube/` 中對應 ID 的快取影片）後重跑可重新取得；`--verify-files` 用於檢查本機是否損壞，並不代表重新下載所有遠端影片。
-
-### 已經知道課程 ID(網址裡的數字)
-
-```powershell
-ntu-cool-materials download-course --course-id 57544
-```
-
-(例如 `https://cool.ntu.edu.tw/courses/57544` 裡的 `57544`)
-
-### 檢查環境是不是都裝好了
-
-```powershell
-ntu-cool-materials doctor
-```
-
-會列出 Python、瀏覽器、ffmpeg 等等的安裝狀態。
-
-如果有缺,加上 `--fix` 嘗試自動修:
-
-```powershell
-ntu-cool-materials doctor --fix
-```
-
-### 看自己是哪個版本(回報問題時很有用)
-
-```powershell
-get-class-material --version
-```
-
-`doctor` 的最上面也會印出版本號。回報問題時附上版本,會比較好幫你查。
-
-工具每次啟動時也會**自動檢查有沒有新版**(一天最多查一次,離線就跳過,不會拖慢速度)。如果有新版會提醒你:
-
-```text
-💡 有新版本 1.0.1(你目前 1.0.0)。更新指令: python -m pip install --upgrade get-class-material
-```
-
-照著跑那行 `python -m pip install --upgrade get-class-material` 就更新好了(Mac 上提示會直接顯示成 `python3`)。
-
-### YouTube 不公開影片下載失敗
-
-大部分 NTU 老師的 YouTube 影片是「**不公開 (unlisted)**」,這種**不需要登入**就能抓,工具會直接下載。
-
-只有**真正設「私人 / 限齡 / 會員限定」**的影片才需要你的 YouTube 登入。這時工具**不用你另外登入**——它會在有影片失敗時問你一次:
-
-```text
-有 2 個 YouTube 影片下載失敗。
-如果是私人 / 限齡 / 會員影片,需要你的 YouTube 登入狀態才能抓。
-要用你瀏覽器裡已登入的 YouTube 帳號重試嗎? [y/N]
-```
-
-按 `y`,工具就會**直接讀取你平常用的瀏覽器(Chrome / Edge / Firefox / Brave …;Mac 上還會試 Vivaldi / Opera / Chromium / Safari)裡已經登入的 YouTube 帳號**來重試——你不用再登入一次。
-
-> 💡 **為什麼是讀瀏覽器、不是跳出來登入?**
-> Google 會擋「被程式控制的瀏覽器」登入(會顯示「這個瀏覽器可能不安全」),所以直接讀你平常瀏覽器裡的登入狀態最穩。
->
-> ⚠ 如果你用 **Chrome / Edge**,重試前請**先完全關掉那個瀏覽器**——瀏覽器開著的時候 cookie 檔會被鎖住,讀不到。Firefox 通常不用關。
->
-> 🍎 Mac 用 **Safari** 的話,要先到「系統設定 → 隱私權與安全性 → 完整磁碟取用權限」把「終端機」打開,否則讀不到 Safari 的 cookie。
->
-> 前提是你平常那個瀏覽器**有登入會看到這些影片的 Google 帳號**(通常就是你的台大 Google 或個人帳號)。
-
-有些 NTU 上課影片(cool-video)其實是包著 YouTube 影片;如果它是私人影片,也會用同樣的方式重試。前面已經回答過 `y` 的話不會再問一次。
-
----
-
-## 自動匯入個人版 NotebookLM(實驗功能)
-
-下載完成後,可以把整門課一鍵匯入你自己的 [NotebookLM](https://notebooklm.google.com/) 筆記本。**預設不會匯入**,下載完會先問你。
-
-最簡單的用法:
-
-```powershell
-python -m pip install "get-class-material[notebooklm]"
-notebooklm login          # 第一次:在跳出的 Chrome 視窗登入 Google
-get-class-material --notebooklm # 選課、下載,完成後直接匯入
-```
-
-🍎 Mac:`python` 改成 `python3`。Google 可能擋自動化瀏覽器登入,有裝 Google Chrome 的話改跑 `notebooklm login --browser chrome`(匯入時登入過期,工具自己重開登入也會自動用 Chrome)。
-
-已經下載過的課程,執行 `ntu-cool-materials notebooklm` 就能從清單選課匯入。
 
 <details>
-<summary>完整說明(安裝方式、CLI 流程、來源上限、去重與中斷恢復…)</summary>
+<summary>點此展開各解方詳細步驟（解方 A ～ H）</summary>
 
-透過非官方 `notebooklm-py` API 匯入（固定測試版本 `0.8.3`），這是唯一的匯入方式。
+### 解方 A：找不到 `python` / `pip`，或版本低於 3.11
+- **Windows：** 到 <https://www.python.org/downloads/> 下載安裝檔 → **務必勾選畫面最下方的 `Add Python to PATH`**（或 `Add python.exe to PATH`）→ 點 Install Now → 裝完**關掉原本的 PowerShell，開一個新視窗**，執行 `python --version` 確認為 `3.11` 以上。
+- **Mac：** 內建 Python 3.9 不能用。請到 <https://www.python.org/downloads/macos/> 下載 `.pkg` 安裝（不要用 Homebrew Python），裝完重開終端機，指令一律改用 `python3`。
 
-在同一 Python 環境安裝及登入：
-
-```sh
-python -m pip install "get-class-material[notebooklm]"
-notebooklm login
-ntu-cool-materials notebooklm
-```
-
-登入狀態由 `notebooklm-py` 保存在本機。可用 `NOTEBOOKLM_HOME` 或 `--notebooklm-storage` 指定。不要提交或分享登入檔案。程式不會從日常 Chrome 擷取 Cookie；登入失效時請重新執行登入程式。
-
-舊版的擴充套件（`--extension`）、自動化瀏覽器（`--browser`）與手動上傳資料夾（`--manual`）已移除。沒有安裝 `notebooklm-py` 時，`get-class-material` 下載完成後不會詢問匯入，只會提示一次安裝指令；明確加 `--notebooklm` 則會顯示安裝方式並回傳失敗。
-
-成功使用本機 API 登入後，會將登入檔的絕對路徑記錄在 `~/.ntu-cool-gcm/notebooklm-storage.json`（只記錄位置，不複製憑證），之後從其他目錄啟動 `get-class-material` 也能沿用。明確指定的登入參數及目前目錄的登入設定仍優先；刪除這個位置紀錄即可取消跨目錄沿用。
-
-### CLI 指定課程流程
-
-登入狀態有效時，可直接指定課程執行：
-
-```sh
-# 下載指定課程，完成後直接 API 匯入
-ntu-cool-materials download-course --course-id 60804 --notebooklm --headless
-
-# 僅匯入已下載教材
-ntu-cool-materials notebooklm --course-id 60804
-
-# 僅核對遠端，不上傳
-ntu-cool-materials notebooklm --course-id 60804 --verify-only
-```
-
-指定 ID 後不顯示選課或筆記本選單：已有課程對應就重用，否則以課程名稱新建筆記本。可加 `--notebooklm-url` 指定自己的筆記本。命令完成後回到終端機，以退出碼回報成功或失敗。下載命令使用背景瀏覽器處理需要瀏覽器的影片；若要停用互動提示與重試，請使用非互動的標準輸入（Windows CMD 加 `<nul`，macOS／Linux 加 `</dev/null`）。非互動執行遇到登入失效時，需先執行登入指令再重試。未帶課程參數的 `ntu-cool-materials notebooklm` 仍提供互動選課。
-
-### 互動選課流程
-
-1. 執行 `get-class-material`，用自己的台大帳號登入、選課下載。
-2. 下載完成後回答「要將這門課匯入 NotebookLM 嗎？」；預設否，下載不會自動把教材送到 Google。
-3. 回答 `y` 就直接開始 API 匯入：沿用此課程已記錄的筆記本，首次則以課程名稱自動建立。不再選筆記本或二次確認。
-4. 終端機顯示匯入結果與筆記本連結。缺少或過期的登入會提示重新登入；上傳失敗時教材仍會保留。
-
-一般 `get-class-material` 指令也會沿用目前目錄 `.secrets`（不存在時使用家目錄 `.ntu-cool-gcm/.secrets`）內的 `notebooklm-api` API 登入。明確指定 `--notebooklm-storage` 或 SDK 的 `NOTEBOOKLM_HOME`／`NOTEBOOKLM_PROFILE`／`NOTEBOOKLM_AUTH_JSON` 時，以指定設定為準。若都沒有本機登入則使用 SDK 的預設設定檔。API 功能需在執行 `get-class-material` 的同一 Python 環境安裝 `get-class-material[notebooklm]`。
-
-已有教材的使用者只要執行 `ntu-cool-materials notebooklm`，就能從預設下載目錄選課，
-也可輸入其他資料夾路徑。每位使用者使用自己的帳號與本機設定檔，不需要維護者的 Google 帳號、API key 或 Codex。
-`--no-notebooklm` 可略過下載後的詢問；管線／非互動模式不會自動詢問。
-匯入訊息預設是中文，`notebooklm`、`download-course`、`get-class-material` 都可加 `--lang en` 改成英文。
-
-```powershell
-# 開啟既有教材匯入引導 / Guided course picker
-ntu-cool-materials notebooklm
-
-# 指定資料夾，仍顯示引導 / Guided import for a given folder
-ntu-cool-materials notebooklm --course-dir "C:\教材\課程名稱 (60804)" --guide
-
-# 選課、下載後，自動匯入 NotebookLM / Download, then import
-get-class-material --notebooklm
-
-# 指定單一課程 / One course
-ntu-cool-materials download-course --course-id 60804 --notebooklm
-
-# 已下載教材：先列出候選來源，不登入、不上傳 / Local preview only
-ntu-cool-materials notebooklm --course-dir "C:\教材\課程名稱 (60804)" --dry-run
-
-# 核對 API 遠端來源與本機紀錄，禁止上傳或建立筆記本 / Remote read-only check
-ntu-cool-materials notebooklm --course-dir "C:\教材\課程名稱 (60804)" --verify-only
-
-# 匯入同一個資料夾 / Import an existing course folder
-ntu-cool-materials notebooklm --course-dir "C:\教材\課程名稱 (60804)"
-
-# 改用你已建立的筆記本 / Use an existing notebook
-ntu-cool-materials notebooklm --course-dir "C:\教材\課程名稱 (60804)" --notebooklm-url "https://notebooklm.google.com/notebook/YOUR_NOTEBOOK_ID"
-```
-
-每個課程資料夾首次直接匯入會以課程名稱建立筆記本；之後依課程根目錄的
-`.notebooklm-import.json` 重用。也可用 `--notebooklm-url` 指定你擁有的筆記本。
-互動引導會顯示目標並要求確認；尚無對應時可從自己的筆記本清單選擇或新增。
-在多選課程時指定同一個 URL，會將這些課程都匯入該筆記本。
-
-- 預設匯入 PDF、TXT、Markdown、DOCX、PPTX、CSV、EPUB，以及 MP3、WAV、M4A、MP4、AAC、OGG、OPUS 影音檔；略過 JSON、metadata、
-  隱藏資料夾、目錄摘要、空檔案、連結檔案與超過 200 MB 的檔案。
-- NotebookLM 不支援 Excel：下載完成與匯入前，會用 [markitdown](https://github.com/microsoft/markitdown)
-  把每個 `.xlsx`／`.xls` 轉成旁邊的 `<檔名>.xlsx.md`（每個工作表一個表格），匯入的是這份 Markdown。
-  原始 Excel 不會被修改；公式只保留計算結果，圖表與圖片會遺失。`[notebooklm]` 已內含轉換工具，
-  只想轉檔可單獨安裝：
-
+### 解方 B：Windows「應用程式控制原則已封鎖此檔案」（WinError 4551）
+- **主程式被擋：** 改用 Python 模組方式啟動：
   ```powershell
-  python -m pip install "get-class-material[excel]"
+  python -X utf8 -m ntu_cool_materials pick
   ```
-- 不想匯入影音檔可加 `--notebooklm-no-media`。每個影音檔各佔一個來源名額。
-  影音依 NotebookLM 的音訊來源處理，**不保證理解影片畫面**；此版本不轉碼、不切割超大檔案，
-  也不直接匯入 YouTube URL。
-- 來源數預設上限為 50（含筆記本現有來源）。付費個人方案可依實際額度設定
-  `--notebooklm-max-sources 100` 等值；這只調整本機檢查，不會提高 Google 帳號額度。
-  超過上限會停止；請指定較小的週次資料夾或另一個筆記本。
-- API 匯入時，公告內容更新會先刪除舊公告來源（含 `announcements (2)`、`(3)` 等歷史版本），再上傳新版；公告附件不受影響。刪除未確認成功時會停止上傳。
-- 使用 SHA-256 比對內容。來源名稱為「週次 - 檔名」；不同週的同名講義仍可區分，名稱重複時加上 (2)、(3)。
-  一般教材內容變更後會新增來源並保留遠端舊版本；公告則依上述規則替換。
-- 上傳前先記錄 `pending`，只有來源清單顯示已可使用才記錄 `complete`。
-  逾時或中斷後，重跑會先確認遠端來源；無法確認時停止，不自動重送。
-  若確定來源不存在，才移除 `.notebooklm-import.json` 中對應的 `pending` 項目後重試。
-  程式異常退出若遺留 `.notebooklm-import.lock`，確認沒有匯入程式執行後再移除該鎖。
-- `--dry-run` 只檢查本機候選檔案，不會讀取遠端來源、驗證登入或預估遠端去重結果。
-  NotebookLM 仍會檢查每來源字數、檔案內容、方案額度及其他限制。
-- `--verify-only` 需先登入，只讀取既有目標的來源狀態並核對本機紀錄，不建立筆記本、不上傳、不改写匯入紀錄；來源缺少時回傳失敗。
+- **內建 Chromium 瀏覽器被擋：** 請安裝一般版 [Google Chrome](https://www.google.com/chrome/)（具官方簽章），工具會自動改用 Chrome 登入。
+- **`ffmpeg.exe` / `node.exe` 被擋：** 其餘講義、頁面與上課錄影仍可正常下載；完整 YouTube 畫質合併需請電腦管理員放行該執行檔（請勿關閉 Windows Smart App Control，關閉後無法重新開啟）。
 
-API 模式使用**非官方 Google 個人版介面**，不是 Enterprise 官方 API；Google 更新可能導致失效。上傳後會依來源 ID、檔名及 READY 狀態再次核對，保留既有去重與 pending 保護。處理中的同名來源會先等待，狀態不明或失敗則停止，避免重複上傳。
-教材下載完成後即使匯入失敗，本機教材仍會保留；畫面會印出可直接重試的 `ntu-cool-materials notebooklm --course-dir …` 指令。
-僅匯入你有權上傳至 Google 的教材。
+### 解方 C：PowerShell「已停用指令碼執行」
+1. 對 PowerShell 圖示按右鍵 →「**以系統管理員身分執行**」。
+2. 貼上執行並按 `Y` 確認：
+   ```powershell
+   Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+   ```
+3. **關掉系統管理員視窗**，改用一般模式重開 PowerShell 即可。
 
-維護者發佈前應用全新的設定檔驗證 Google 登入、首次上傳、重跑去重及中斷恢復。
-單元測試和打包檢查不代表通過 Google 實站驗證；此功能通過實站測試前保留「實驗」標示。
+### 解方 D：找不到 `winget`（自動安裝 ffmpeg / Node.js 失敗）
+- **方法一：** 到 Microsoft Store 搜尋並安裝「**應用程式安裝程式 (App Installer)**」，裝完重開 PowerShell。
+- **方法二：** 手動下載安裝 [ffmpeg（essentials 版）](https://www.gyan.dev/ffmpeg/builds/) 與 [Node.js（LTS 版）](https://nodejs.org/)，裝完重開 PowerShell。
 
-來源：[Google 支援格式與限制](https://support.google.com/gemininotebook/answer/16215270)。
+### 解方 E：缺元件、`command not found` 或先前跳過安裝 ffmpeg
+- 檢查環境狀態（Mac 請將 `ntu-cool-materials` 改寫為 `python3 -m ntu_cool_materials`）：
+  ```powershell
+  ntu-cool-materials doctor
+  ```
+- 嘗試自動修復並補裝缺少項目：
+  ```powershell
+  ntu-cool-materials doctor --fix
+  ```
+- 執行完畢後**關掉視窗重開**再試一次。Mac 若需單獨裝 YouTube 元件，可先裝 Homebrew 再執行 `brew install ffmpeg node`。
+
+### 解方 F：Mac 出現 `CERTIFICATE_VERIFY_FAILED`
+打開 Finder →「應用程式」→「`Python 3.x`」資料夾 → 點兩下執行 **`Install Certificates.command`**。
+
+### 解方 G：YouTube 私人／限齡／會員影片下載失敗
+- 不公開（unlisted）影片免登入即可下載；只有私人、限齡或會員影片會詢問 `要用瀏覽器裡已登入的帳號重試嗎? [y/N]`。
+- **使用 Chrome / Edge：** 輸入 `y` 之前，**請先完全關掉所有 Chrome / Edge 視窗**（含背景執行），否則登入 cookie 檔會被鎖定而讀取失敗；Firefox 通常不需關閉。
+- **Mac 使用 Safari：** 需至「系統設定 → 隱私權與安全性 → 完整磁碟取用權限」開啟「終端機」。
+- 少數受 DRM 保護的影片無法下載屬平台限制；瀏覽器也須事先登入有權限觀看該影片的帳號。
+
+### 解方 H：下載到一半中斷，或 NTU COOL 登入過期
+- 直接重跑 `get-class-material` 即可：已完整下載的檔案會自動跳過，中斷處會安全續傳，登入過期也會自動跳出瀏覽器重登。
+- 若想強制重新登入，請執行：
+  ```powershell
+  get-class-material --refresh-session
+  ```
 
 </details>
 
 ---
 
-## 常見問題
-
-### Q: 怎麼更新到最新版?
-
-```powershell
-python -m pip install --upgrade get-class-material
-```
-
-已經是最新版的話它不會做任何事,隨時都可以放心跑。想確認自己現在哪一版,打 `get-class-material --version`。
-
-### Q: 輸入 `python --version` 顯示「無法辨識」/「找不到」
-
-代表你**還沒裝 Python**,或者**裝的時候沒勾「Add Python to PATH」**。
-
-**解法:** 重裝一次,這次記得勾那個選項。然後**關掉 PowerShell 重開**。
-
-### Q: 輸入 `python -m pip install get-class-material` 顯示「找不到 pip」
-
-跟上一題一樣,通常是 Python 沒裝好。重裝 Python 並勾「Add Python to PATH」。
-
-### Q: 顯示「應用程式控制原則已封鎖此檔案」(WinError 4551)
-
-Windows 的 Smart App Control / 應用程式控制原則擋下了未簽章的執行檔(例如 `pip.exe`、`get-class-material.exe`)。所以本文件一律用 `python -m pip` 安裝與更新;如果連 `get-class-material` 也被擋,改用:
-
-```powershell
-python -X utf8 -m ntu_cool_materials pick
-```
-
-若是登入用的 Chromium 瀏覽器被擋,程式會自動改用電腦上安裝的 Google Chrome(有 Google 簽章,不會被擋);沒有 Chrome 的話請先[安裝](https://www.google.com/chrome/)。第一次改用 Chrome 需要重新登入一次。
-
-若是 `ffmpeg.exe` 或 `node.exe` 被擋,程式會提示並跳過 YouTube 階段(或畫質受限),其餘檔案照常下載;要完整功能需請電腦管理員放行該檔案。請不要為此關閉 Smart App Control(關掉後無法再開回來)。
-
-### Q: PowerShell 顯示「無法載入指令碼,因為這個系統上已停用指令碼執行」
-
-這是 Windows 的安全設定。打開 PowerShell **以系統管理員身份**(右鍵點 PowerShell 圖示 → 以系統管理員身份執行),貼上:
-
-```powershell
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-```
-
-按 `Y` 確認。然後關掉視窗,正常開一個新的就 OK。
-
-### Q: `get-class-material` 跑下去說 `winget` 找不到
-
-`winget` 是 Windows 11 內建的應用程式安裝工具。Windows 10 比較舊版可能沒有。
-
-**解法:** 到 Microsoft Store 搜尋「應用程式安裝程式」(App Installer),點安裝,重開 PowerShell。
-
-或者直接手動安裝 ffmpeg 跟 Node.js:
-1. ffmpeg: <https://www.gyan.dev/ffmpeg/builds/>(下載 `ffmpeg-release-essentials.zip`)
-2. Node.js: <https://nodejs.org/>(下載 LTS 版)
-
-裝完關掉 PowerShell 重開,再跑 `get-class-material`。
-
-### Q: Mac 上出現 `CERTIFICATE_VERIFY_FAILED`
-
-python.org 的 Mac 版 Python 預設沒有 SSL 憑證。工具會自動改用 `certifi` 的憑證,一般不會遇到;如果其他程式也出現這個錯誤,打開「應用程式 → Python 3.x」資料夾,點兩下 **Install Certificates.command** 即可。
-
-### Q: NTU COOL 登入過期了
-
-直接再跑一次 `get-class-material` 就好 — 工具會自動發現過期並開瀏覽器讓你重新登入。要手動強制的話可以加 `--refresh-session`:
-
-```powershell
-get-class-material --refresh-session
-```
-
-### Q: YouTube 影片抓不到 / 失敗很多
-
-最常見原因:
-
-1. **是私人 / 限齡 / 會員影片** — 需要你的 YouTube 登入。工具下載失敗時會問你「要用瀏覽器裡已登入的帳號重試嗎?」,按 `y` 即可(用 Chrome/Edge 的話記得先**關掉瀏覽器**再重試)
-2. **沒裝 ffmpeg / Node.js** — 第一次啟動時選了不安裝的話,跑 `ntu-cool-materials doctor --fix` 補裝
-3. **影片有 DRM 保護** — 罕見但會發生,這種真的抓不下來
-
-跑 `ntu-cool-materials doctor` 看有沒有缺東西。
-
-### Q: 下載到一半中斷怎麼辦
-
-**直接再跑一次 `get-class-material`** 即可。
-
-- 已記錄完成且版本／本機大小吻合的檔案會跳過。
-- 伺服器支援 Range，且部分檔案具有吻合的 ETag／Last-Modified 時才續傳；無法確認版本時會安全地重新下載。
-- 暫時性網路錯誤與 429／部分 5xx 最多嘗試 3 次，遵守 Retry-After（最多等 60 秒）。
-- 下載長度與續傳範圍檢查通過後才替換正式檔案；失敗時保留原本完整檔案。
-
-### Q: 我的檔案到底放在哪
-
-預設在你的「文件 / Documents」資料夾底下,叫 `ntu-cool-gcm_material/`。
-
-常見位置像這樣:
-
-```text
-C:\Users\你\Documents\ntu-cool-gcm_material\
-```
-
-如果你以前已經在目前資料夾建立過 `ntu-cool-gcm_material/`,工具會優先沿用那個舊資料夾。
-
-每次跑完工具最後一行也會印「檔案存放位置:」+ 完整路徑。
-
-### Q: 可以只抓 PDF 嗎
-
-可以:
-
-```powershell
-get-class-material --skip-pages --skip-youtube --skip-cool-videos
-```
-
-### Q: 可以換輸出資料夾嗎
-
-可以:
-
-```powershell
-get-class-material --out D:\我的課程資料夾
-```
-
-### Q: 影片畫質好像不太好
-
-YouTube 影片畫質取決於老師上傳的原檔。多數 NTU 老師上傳的是 **480p**,工具會自動抓最高畫質,所以你看到的就是來源最高解析度。
-
-NTU 上課影片(cool-video)畫質維持來源原檔。
-
-### Q: 這樣會不會違反版權
-
-**這個工具只下載你自己有權限看到的課程教材** — 跟你平常用瀏覽器一個個下載的權限一模一樣,不繞過任何權限系統。
-
-但是:
-
-- 下載下來的教材**仍然受老師、出版社、原作者的版權保護**
-- **僅限自己學習使用**,不要公開散播、不要上傳到網路、不要分享給校外人士
-- 老師同意才能在合理範圍內分享給同班同學
-
-簡單說:**自己讀沒問題,公開散播違法。**
-
----
-
-## 安全與隱私提醒
-
-### 密碼
-
-- 密碼**只**輸入在工具跳出來的瀏覽器登入頁(就是 NTU COOL 的官方登入頁面)
-- 工具本身**從來不會看到密碼**
-- 不要把密碼複製貼上到 PowerShell、聊天室、Email 或任何其他地方
-
-### `.secrets/` 資料夾
-
-工具會把登入資料存在 `~/.ntu-cool-gcm/.secrets/`(Windows 是 `C:\Users\<你的帳號>\.ntu-cool-gcm\.secrets\`;如果你執行的目錄下本來就有 `.secrets/`,會沿用那一個),裡面存:
-- 你登入 NTU COOL 後的 cookie(等同於登入狀態)
-- NotebookLM 的登入資料(如果有用匯入功能)
-- YouTube 的 cookie(只有你自己匯出過才會有)
-
-**這個資料夾等同於你的登入憑證**。請:
-
-- ❌ **不要**分享給別人,連同學也不要
-- ❌ **不要**上傳到 GitHub、雲端硬碟、Discord
-- ❌ **不要**截圖貼到聊天室
-- ✅ 換電腦就重新跑 `get-class-material --refresh-session` 重新登入即可
-
-預設它是隱藏資料夾(Windows 用 `dir` 看不到,要在檔案總管開「顯示隱藏檔」才看得到)。
-
-### 下載的教材
-
-不要公開散播。詳見上面的版權問答。
-
----
-
-## 進階:其他指令
-
-如果你只想看可見課程清單,不下載:
-
-```powershell
-ntu-cool-materials courses --refresh-session
-```
-
-抓某課的公告:
-
-```powershell
-ntu-cool-materials announcements --course-id 57544 --refresh-session --print
-```
-
-完整指令清單請看 `--help`:
-
-```powershell
-ntu-cool-materials --help
-get-class-material --help
-```
-
----
+## 進階功能與其他指令
 
 <details>
-<summary>給開發者 / 從原始碼安裝</summary>
+<summary>自動匯入 NotebookLM（選用・實驗功能）</summary>
+
+```powershell
+python -m pip install "get-class-material[notebooklm]"
+notebooklm login
+get-class-material --notebooklm
+```
+
+- Mac 把 `python` 改為 `python3`；若 Google 擋登入改用 `notebooklm login --browser chrome`。
+- 已下載的課程可直接執行 `ntu-cool-materials notebooklm` 選課匯入（個人版預設上限 50 來源，可用 `--notebooklm-max-sources` 調整；加 `--notebooklm-no-media` 略過影音；Excel 會自動轉 `.xlsx.md`）。
+
+</details>
+
+<details>
+<summary>進階指令一覽</summary>
+
+```powershell
+# 不要影片，只抓講義與頁面（可混搭 --skip-pdfs / --skip-pages / --skip-announcements / --skip-youtube / --skip-cool-videos）
+get-class-material --skip-youtube --skip-cool-videos
+
+# 指定存檔資料夾
+get-class-material --out D:\我的課程
+
+# 指定課程 ID 下載（網址 courses/ 後面的數字）
+ntu-cool-materials download-course --course-id 57544
+
+# 環境檢查與自動修復
+ntu-cool-materials doctor
+ntu-cool-materials doctor --fix
+
+# 其他常用參數：--refresh-session（強制重登）、--keep-terminal（結束不關視窗）、--lang en（英文介面）、--version（查版本）
+```
+
+舊版指令 `ntu-cool-gcm` 仍相容。另可使用 `ntu-cool-materials courses --refresh-session` 與 `ntu-cool-materials announcements --course-id 57544 --refresh-session --print`。
+
+</details>
+
+<details>
+<summary>給開發者（原始碼安裝與測試）</summary>
 
 ```powershell
 git clone https://github.com/jabir95tsai/get_class_material.git
@@ -762,12 +182,23 @@ python -m playwright install chromium
 python -m unittest discover -s tests
 ```
 
-架構說明見 [CLAUDE.md](CLAUDE.md)。
-
-- PyPI: <https://pypi.org/project/get-class-material/>
-- GitHub: <https://github.com/jabir95tsai/get_class_material>
-- License: MIT — 見 [LICENSE](LICENSE)
-
-支援的 Python 版本:3.11+。Playwright + yt-dlp + ffmpeg + Node.js 為下載 YouTube 影片所需;第一次執行時必要項目(Playwright Chromium、yt-dlp)會自動安裝,ffmpeg / Node.js 會先詢問。
+架構見 [CLAUDE.md](CLAUDE.md) · [PyPI](https://pypi.org/project/get-class-material/) · [GitHub](https://github.com/jabir95tsai/get_class_material) · [MIT License](LICENSE)
 
 </details>
+
+---
+
+## 授權、隱私與使用規範
+
+1. **軟體開源授權（MIT License）**
+   - 本專案原始碼依 [MIT License](LICENSE) 授權釋出（Copyright (c) 2026 jabir）。
+   - 任何人均得免費使用、複製、修改、合併、發布或散佈本軟體，惟須於軟體複本中保留原著作權聲明與授權條文；本軟體依「現況（AS IS）」提供，不附帶任何明示或默示擔保，開發者不對使用本工具所生之任何直接或間接損害負擔保或賠償責任。
+2. **第三方套件與外部元件授權**
+   - 本工具相依或使用之第三方軟體包括 `requests`、`playwright`、`yt-dlp`（選用功能另含 `notebooklm-py`、`markitdown`），以及使用者端安裝之 Chromium、FFmpeg 與 Node.js；各元件均依其原專案授權條款規範。
+3. **課程教材著作權與使用範圍**
+   - 本工具僅以使用者本人登入之合法權限存取課程資料，不繞過任何身分驗證、權限控管或 DRM 保護。
+   - 下載所得之講義、投影片、頁面文字與影音內容，其著作權仍歸原授課教師、學校或原權利人所有。**僅限修課學生個人學習與複習使用**，禁止公開轉載、上傳網路、商業利用或散布予未經授權之第三方。
+   - 若啟用選用之 NotebookLM 匯入功能（透過非官方個人版介面運作），請確認僅上傳你有權傳輸至第三方服務之教材，並自行遵守學校規定與 Google 服務條款。
+4. **帳號安全與本機憑證隱私**
+   - 台大帳號密碼僅由使用者親自輸入於工具開啟之 NTU COOL 官方登入頁，本程式不讀取、不側錄、不儲存亦不回傳密碼。
+   - 登入後之工作階段憑證與 cookie 僅存於本機 `~/.ntu-cool-gcm/.secrets/`（若目前目錄已有 `.secrets/` 則沿用），不會傳送至開發者或任何第三方伺服器。該資料夾等同於你的登入狀態，**切勿上傳至 GitHub、雲端硬碟或分享給他人**。
