@@ -1,12 +1,21 @@
+<div align="center">
+
 # NTU COOL Get Class Material
 
-[![PyPI](https://img.shields.io/pypi/v/get-class-material)](https://pypi.org/project/get-class-material/)
-[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-
-在終端機登入 NTU COOL、選課，即可下載講義附件、公告、課程頁面與影片。教材依課程和單元整理，方便離線複習，也可選擇匯入 NotebookLM。
+**一行指令，把 NTU COOL 的整門課搬回你的電腦**
 
 Download NTU COOL course files, announcements, pages, and videos into organized local folders.
+
+[![PyPI](https://img.shields.io/pypi/v/get-class-material?color=blue)](https://pypi.org/project/get-class-material/)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-lightgrey)](#快速開始)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
+📄 講義附件 · 📢 公告 · 📝 課程頁面 · 🎬 上課影片 · 🤖 NotebookLM 匯入（選用）
+
+</div>
+
+---
 
 ## 目錄
 
@@ -18,7 +27,7 @@ Download NTU COOL course files, announcements, pages, and videos into organized 
 
 ## 快速開始
 
-先安裝 [Python 3.11 以上](https://www.python.org/downloads/)。Windows 安裝時若有 **Add Python to PATH** 選項，請勾選，裝完再開新的 PowerShell。macOS 可使用 [python.org 的安裝程式](https://www.python.org/downloads/macos/)。
+> **事前準備**：先安裝 [Python 3.11 以上](https://www.python.org/downloads/)。Windows 安裝時若有 **Add Python to PATH** 選項，請勾選，裝完再開新的 PowerShell。macOS 可使用 [python.org 的安裝程式](https://www.python.org/downloads/macos/)。
 
 **Windows（PowerShell）**
 
@@ -34,11 +43,23 @@ python3 -m pip install get-class-material
 get-class-material
 ```
 
-如果程式開啟瀏覽器，請在 NTU COOL 登入頁完成台大帳號驗證。回到終端機依提示選課，等候下載完成。
-
 ## 下載結果
 
-預設存到「文件（Documents）」下的 `ntu-cool-gcm_material`。如果目前目錄已經有同名資料夾，會沿用該資料夾。每門課會建立「課程名稱（課程 ID）」資料夾，單元名稱有週次時會依週次整理。
+預設存到「文件（Documents）」下的 `ntu-cool-gcm_material`。每門課會建立「課程名稱（課程 ID）」資料夾，單元名稱有週次時會依週次整理。
+
+```text
+ntu-cool-gcm_material/
+└── 課程名稱 (57544)/
+    ├── course_overview.md        ← 課程索引，從這裡開始
+    ├── announcements/
+    │   └── announcements.md
+    ├── week1/
+    │   ├── 講義.pdf
+    │   ├── 課程頁面.md
+    │   ├── 上課錄影.mp4
+    │   └── attachments/
+    └── week2/ …
+```
 
 | 內容 | 存檔方式 |
 | --- | --- |
@@ -47,7 +68,7 @@ get-class-material
 | YouTube 與 NTU COOL 上課錄影 | 下載成功的影片存為 `.mp4` |
 | 課程索引 | 從 `course_overview.md` 查看單元和檔案位置 |
 
-補抓教材或下載中斷時，重新執行 `get-class-material` 並選同一門課。程式會重用已完成的檔案，並在伺服器支援時續傳中斷的檔案。
+> **提示**：可隨時重跑。補抓教材或下載中斷時，重新執行 `get-class-material` 並選同一門課。程式會重用已完成的檔案，並在伺服器支援時續傳中斷的檔案。
 
 ## 常用指令
 
@@ -111,6 +132,8 @@ macOS 請用 `python3`。開發筆記見 [CLAUDE.md](CLAUDE.md)。
 </details>
 
 ## 授權、隱私與使用規範
+
+> **注意：下載的教材僅限個人學習使用，請勿公開散布。** 詳細條款如下。
 
 1. **軟體開源授權（MIT License）**
    - 本專案原始碼依 [MIT License](LICENSE) 授權釋出（Copyright (c) 2026 jabir）。
