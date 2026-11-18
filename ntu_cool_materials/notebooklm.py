@@ -6,12 +6,15 @@ isolated from local planning and journaling.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
+import subprocess
 import tempfile
+import weakref
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlsplit
@@ -36,6 +39,7 @@ class Source:
     relative_path: str
     digest: str
     title: str
+    content_digest: str | None = None
 
 
 @dataclass
@@ -43,6 +47,22 @@ class ImportPlan:
     root: Path
     sources: list[Source] = field(default_factory=list)
     skipped: list[tuple[str, str]] = field(default_factory=list)
+    _video_parts: Path | None = field(default=None, repr=False)
+
+    def print_skipped(self, *, show_details: bool = False) -> None:
+        if not self.skipped:
+            return
+        print(t(f"略過的檔案（共 {len(self.skipped)} 個）", f"Skipped files ({len(self.skipped)} total)"))
+        if not show_details:
+            print(t("  加上 --show-skipped 可查看清單。", "  Use --show-skipped to see the list."))
+            return
+        by_reason: dict[str, list[str]] = {}
+        for relative, reason in self.skipped:
+            by_reason.setdefault(reason, []).append(relative)
+        for reason, paths in by_reason.items():
+            print(t(f"  {reason}（{len(paths)} 個）", f"  {reason} ({len(paths)})"))
+            for relative in paths:
+                print(f"    - {relative}")
 
 
 @dataclass
@@ -87,11 +107,54 @@ def is_announcement_title(title: str) -> bool:
         r"(?:announcements|announcements - announcements)(?: \(\d+\))?(?:\.md)?", clean))
 
 
+def _split_video(path: Path, output: Path, size: int) -> list[Path]:
+    duration = float(subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+        check=True, capture_output=True, text=True,
+    ).stdout)
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError("Invalid video duration")
+
+    initial_seconds = duration / math.ceil(size / MAX_FILE_BYTES)
+    for stream_copy in (True, False):
+        seconds = initial_seconds
+        for _ in range(6):
+            interval = f"{seconds:.6f}"
+            codecs = ["-c", "copy"] if stream_copy else [
+                "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
+                "-force_key_frames", f"expr:gte(t,n_forced*{interval})",
+            ]
+            try:
+                subprocess.run(
+                    ["ffmpeg", "-nostdin", "-v", "error", "-xerror", "-i", str(path),
+                     "-map", "0:V:0", "-map", "0:a:0?", *codecs,
+                     "-f", "segment", "-segment_time", interval, "-reset_timestamps", "1",
+                     "-segment_start_number", "1", "part %06d.mp4"],
+                    cwd=output, check=True, capture_output=True,
+                )
+            except subprocess.CalledProcessError:
+                if not stream_copy:
+                    raise
+                for part in output.glob("part *.mp4"):
+                    part.unlink()
+                break
+            parts = sorted(output.glob("part *.mp4"))
+            if len(parts) >= 2 and all(0 < part.stat().st_size <= MAX_FILE_BYTES for part in parts):
+                return parts
+            for part in parts:
+                part.unlink()
+            seconds /= 2
+    raise ValueError("Could not produce video parts within the upload limit")
+
+
 def build_import_plan(course_dir: Path, *, include_media: bool = True) -> ImportPlan:
     root = course_dir.expanduser().resolve()
     if not root.is_dir():
         raise NotebookLMError(t("教材資料夾不存在；請指定一門課的資料夾。",
                                 "The materials folder doesn't exist; point at one course's folder."))
+    print(t(f"NotebookLM：正在掃描並準備教材（{root.name}）…",
+            f"NotebookLM: scanning and preparing materials ({root.name})…"), flush=True)
     plan = ImportPlan(root)
     allowed = DOCUMENT_TYPES | (MEDIA_TYPES if include_media else set())
     seen: set[str] = set()
@@ -120,14 +183,15 @@ def build_import_plan(course_dir: Path, *, include_media: bool = True) -> Import
                 plan.skipped.append((relative, reason))
                 continue
             size = path.stat().st_size
-            if not size or size > MAX_FILE_BYTES:
-                plan.skipped.append((relative, t("空檔案或超過 200 MB", "empty or over 200 MB")))
+            split_video = size > MAX_FILE_BYTES and path.suffix.lower() == ".mp4"
+            if not size or (size > MAX_FILE_BYTES and not split_video):
+                reason = t("空檔案", "empty file") if not size else t("超過 200 MB", "over 200 MB")
+                plan.skipped.append((relative, reason))
                 continue
             digest = sha256_file(path)
             if digest in seen:
                 plan.skipped.append((relative, t("內容相同", "duplicate content")))
                 continue
-            seen.add(digest)
             parts = Path(relative).with_suffix("").parts
             if len(parts) >= 2 and parts[-1].casefold() == parts[-2].casefold():
                 parts = parts[:-1]
@@ -138,13 +202,43 @@ def build_import_plan(course_dir: Path, *, include_media: bool = True) -> Import
             else:
                 base_title = f"{label}{path.suffix.lower()}"
                 suffix = path.suffix.lower()
-            title = base_title
-            counter = 2
-            while title in used_titles:
-                title = f"{label} ({counter}){suffix}"
-                counter += 1
-            used_titles.add(title)
-            plan.sources.append(Source(path, relative, digest, title))
+            uploads = [Source(path, relative, digest, base_title)]
+            if split_video:
+                try:
+                    if plan._video_parts is None:
+                        plan._video_parts = Path(tempfile.mkdtemp(prefix="ntucool-video-parts-"))
+                        weakref.finalize(plan, shutil.rmtree, plan._video_parts, ignore_errors=True)
+                    output = Path(tempfile.mkdtemp(dir=plan._video_parts))
+                    with spinner(t(f"  正在分割 {relative}（{size / 1_000_000:.1f} MB）",
+                                   f"  Splitting {relative} ({size / 1_000_000:.1f} MB)")):
+                        video_parts = _split_video(path, output, size)
+                    if sha256_file(path) != digest:
+                        raise ValueError("Video changed during splitting")
+                    uploads = []
+                    for index, part in enumerate(video_parts, 1):
+                        content_digest = sha256_file(part)
+                        uploads.append(Source(
+                            part, f"{relative} (part {index})", f"{digest}:{index}:{content_digest}",
+                            f"{label} - part {index}.mp4", content_digest,
+                        ))
+                except FileNotFoundError:
+                    plan.skipped.append((relative, t("影片分割需要 ffmpeg 和 ffprobe，請確認檔案及工具可用",
+                                                     "Video splitting requires ffmpeg and ffprobe; check the file and tools")))
+                    continue
+                except (OSError, ValueError, subprocess.CalledProcessError):
+                    plan.skipped.append((relative, t("影片分割失敗，無法產生符合 200 MB 上限的分段",
+                                                     "Video splitting failed to produce parts within 200 MB")))
+                    continue
+            seen.add(digest)
+            for source in uploads:
+                title = source.title
+                title_stem = Path(title).stem if suffix else title
+                counter = 2
+                while title in used_titles:
+                    title = f"{title_stem} ({counter}){suffix}"
+                    counter += 1
+                used_titles.add(title)
+                plan.sources.append(replace(source, title=title))
     return plan
 
 
@@ -253,7 +347,7 @@ def import_plan(plan: ImportPlan, adapter: NotebookAdapter, *, notebook_url: str
                     while new_title in ready:
                         counter += 1
                         new_title = f"{stem} ({counter}){suffix}"
-                    pending.append(Source(source.path, source.relative_path, source.digest, new_title))
+                    pending.append(replace(source, title=new_title))
                 else:
                     record[source.digest] = {"title": source.title, "status": "complete"}
                     result.unchanged += 1
@@ -261,7 +355,11 @@ def import_plan(plan: ImportPlan, adapter: NotebookAdapter, *, notebook_url: str
                 pending.append(source)
         _save_state(path, state)
         removed_count = adapter.announcement_source_count() if replacements else 0
-        if adapter.source_count() - removed_count + len(pending) > max_sources:
+        current_count = adapter.source_count()
+        projected_count = current_count - removed_count + len(pending)
+        print(t(f"NotebookLM 來源：目前 {current_count}/{max_sources}，匯入後預計 {projected_count}/{max_sources}。",
+                f"NotebookLM sources: {current_count}/{max_sources} now, {projected_count}/{max_sources} after import."))
+        if projected_count > max_sources:
             raise NotebookLMError(t("來源數將超過設定上限。請改用另一個筆記本／較小的教材資料夾，"
                                     "或依帳號方案提高 --notebooklm-max-sources。",
                                     "This would exceed the source limit. Use another notebook or a smaller "
@@ -272,7 +370,7 @@ def import_plan(plan: ImportPlan, adapter: NotebookAdapter, *, notebook_url: str
                 staged_name = source.title if Path(source.title).suffix else f"{source.title}{source.path.suffix}"
                 staged = Path(tmp) / staged_name
                 shutil.copyfile(source.path, staged)
-                if sha256_file(staged) != source.digest:
+                if sha256_file(staged) != (source.content_digest or source.digest):
                     raise NotebookLMError(t(f"檔案已變動，請重新執行：{source.relative_path}",
                                             f"File changed; run again: {source.relative_path}"))
                 if source.digest in replacements:

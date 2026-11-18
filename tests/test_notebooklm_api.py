@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from ntu_cool_materials import cli
 from ntu_cool_materials.notebooklm import NotebookLMError, STATE_NAME, build_import_plan, import_plan
@@ -27,6 +27,9 @@ class FakeAPI:
         self.fail_wait = False
         self.fail_upload = False
         self.renames = 0
+        self.settings = SimpleNamespace(
+            get_account_limits=AsyncMock(return_value=SimpleNamespace(source_limit=None))
+        )
         self.notebooks = SimpleNamespace(list=self.list_notebooks, create=self.create)
         self.sources = SimpleNamespace(list=self.list_sources, add_file=self.add_file,
                                        wait_until_ready=self.wait, rename=self.rename_source, delete=self.delete_source)
@@ -178,6 +181,27 @@ class APITests(unittest.TestCase):
         with self.assertRaisesRegex(NotebookLMError, "來源數"):
             self.run_import()
         self.assertEqual(self.api.uploads, 0)
+
+    def test_api_import_detects_account_limit_by_default(self):
+        self.api.rows = [SimpleNamespace(id=str(i), title=str(i), status=2) for i in range(50)]
+        self.api.settings.get_account_limits.return_value.source_limit = 300
+        with patch(
+            "ntu_cool_materials.notebooklm_api.api_client_context", return_value=self.api
+        ):
+            self.assertEqual(run_api_import(self.root, notebook_url=URL).uploaded, 1)
+        self.api.settings.get_account_limits.assert_awaited_once()
+
+    def test_api_import_falls_back_when_account_limit_is_missing(self):
+        self.api.rows = [SimpleNamespace(id=str(i), title=str(i), status=2) for i in range(50)]
+        with patch("ntu_cool_materials.notebooklm_api.api_client_context", return_value=self.api):
+            with self.assertRaisesRegex(NotebookLMError, "來源數"):
+                run_api_import(self.root, notebook_url=URL)
+        self.assertEqual(self.api.uploads, 0)
+
+    def test_api_import_explicit_limit_skips_detection(self):
+        with patch("ntu_cool_materials.notebooklm_api.api_client_context", return_value=self.api):
+            self.assertEqual(run_api_import(self.root, notebook_url=URL, max_sources=300).uploaded, 1)
+        self.api.settings.get_account_limits.assert_not_awaited()
 
     def test_user_cancellation_never_creates_or_uploads(self):
         with self.adapter(interactive=True) as adapter, patch("builtins.input", return_value="q"):

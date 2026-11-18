@@ -290,6 +290,17 @@ class NotebookLMAPIAdapter:
                                     "Source processing isn't confirmed complete; stopped without re-sending."))
         return {s.title for s in rows if s.title and s.status == SourceStatus.READY}
 
+    def account_source_limit(self) -> int:
+        try:
+            limit = self.call(self.client.settings.get_account_limits()).source_limit
+        except NotebookLMError:
+            limit = None
+        if type(limit) is int and limit > 0:
+            return limit
+        print(t("無法偵測 NotebookLM 來源上限，暫用 50。",
+                "Couldn't detect the NotebookLM source limit. Using 50."))
+        return 50
+
     def source_count(self) -> int:
         return len(self._sources())
 
@@ -322,12 +333,13 @@ class NotebookLMAPIAdapter:
 
 
 def run_api_import(course_dir: Path, *, notebook_url: str | None = None,
-                   include_media: bool = True, max_sources: int = 50,
+                   include_media: bool = True, max_sources: int | None = None,
                    dry_run: bool = False, storage_path: Path | None = None,
                    interactive: bool = False, verify_only: bool = False,
+                   show_skipped: bool = False,
                    plan: ImportPlan | None = None) -> ImportResult:
     """Import `course_dir`; pass `plan` when the caller already built (and hashed) it."""
-    if max_sources < 1:
+    if max_sources is not None and max_sources < 1:
         raise NotebookLMError(t("來源上限必須大於零。", "The source limit must be greater than zero."))
     if notebook_url:
         notebook_url = validate_notebook_url(notebook_url)
@@ -336,10 +348,9 @@ def run_api_import(course_dir: Path, *, notebook_url: str | None = None,
             # Folders downloaded before Excel conversion existed still get their Markdown.
             convert_spreadsheets(course_dir)
         plan = build_import_plan(course_dir, include_media=include_media)
-    print(t(f"NotebookLM API：{len(plan.sources)} 個候選來源；{len(plan.skipped)} 個略過。",
-            f"NotebookLM API: {len(plan.sources)} candidate source(s); {len(plan.skipped)} skipped."))
-    for relative, reason in plan.skipped:
-        print(t(f"  略過 {relative}：{reason}", f"  skipped {relative}: {reason}"))
+    print(t(f"NotebookLM API：{len(plan.sources)} 個候選來源。",
+            f"NotebookLM API: {len(plan.sources)} candidate source(s)."))
+    plan.print_skipped(show_details=show_skipped)
     if dry_run:
         for source in plan.sources:
             print(t(f"  候選 {source.relative_path}", f"  candidate {source.relative_path}"))
@@ -358,6 +369,8 @@ def run_api_import(course_dir: Path, *, notebook_url: str | None = None,
                         expected_titles.add(item["title"])
         except Exception:
             pass
+    print(t("NotebookLM：正在連線並確認登入狀態…",
+            "NotebookLM: connecting and checking sign-in…"), flush=True)
     with NotebookLMAPIAdapter(expected_titles, storage_path=storage_path,
                              interactive=interactive, explicit_url=bool(notebook_url)) as adapter:
         if verify_only:
@@ -378,6 +391,8 @@ def run_api_import(course_dir: Path, *, notebook_url: str | None = None,
                                         "Not every remote source is ready; read-only check stopped, nothing re-sent."))
             result = ImportResult(unchanged=len(plan.sources), notebook_url=url)
         else:
+            if max_sources is None:
+                max_sources = adapter.account_source_limit()
             result = import_plan(plan, adapter, notebook_url=notebook_url, max_sources=max_sources)
     print(t(f"NotebookLM API：新增 {result.uploaded}，已存在 {result.unchanged}。",
             f"NotebookLM API: {result.uploaded} added, {result.unchanged} already there."))

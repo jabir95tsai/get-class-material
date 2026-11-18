@@ -57,6 +57,28 @@ class PublicFlowTests(unittest.TestCase):
         self.assertTrue(run.call_args.kwargs["include_media"])
         self.assertEqual(run.call_args.kwargs["max_sources"], 17)
 
+    def test_skipped_files_are_grouped_in_preview_and_empty_guided_import(self):
+        for path in self.root.glob("*.md"):
+            path.unlink()
+        for name in ("a.pdf", "b.pdf"):
+            (self.root / name).touch()
+        (self.root / "slides.xyz").write_text("slides", encoding="utf-8")
+
+        for mode, extra in (("--dry-run", []), ("--dry-run", ["--show-skipped"]),
+                            ("--guide", ["--show-skipped"])):
+            with self.subTest(mode=mode, extra=extra), contextlib.redirect_stdout(io.StringIO()) as output, \
+                 patch("ntu_cool_materials.console.stdin_is_interactive", return_value=True):
+                self.assertEqual(cli.main(["notebooklm", "--course-dir", str(self.root), mode, *extra]), 0)
+                lines = output.getvalue()
+                self.assertEqual(lines.count("略過的檔案（共 3 個）"), 1)
+                if extra:
+                    self.assertIn("空檔案（2 個）\n    - a.pdf\n    - b.pdf", lines)
+                    self.assertIn("NotebookLM 不支援的格式（1 個）\n    - slides.xyz", lines)
+                else:
+                    self.assertIn("--show-skipped", lines)
+                    self.assertNotIn("a.pdf", lines)
+                    self.assertNotIn("slides.xyz", lines)
+
     def test_guide_hashes_each_file_only_once(self):
         from ntu_cool_materials import notebooklm, notebooklm_api
         with patch("ntu_cool_materials.console.stdin_is_interactive", return_value=True), \

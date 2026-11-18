@@ -70,6 +70,10 @@ ntu-cool-gcm_material/
 
 > **提示**：可隨時重跑。補抓教材或下載中斷時，重新執行 `get-class-material` 並選同一門課。程式會重用已完成的檔案，並在伺服器支援時續傳中斷的檔案。
 
+啟用 NotebookLM 匯入時，超過 200 MB 的 MP4 會用 `ffmpeg` 和 `ffprobe` 自動分成 `part 1`、`part 2` 等可獨立播放的檔案。每段最多 200 MB，各占一個 NotebookLM 來源名額，原始影片會保留。
+
+匯入時預設只顯示略過的檔案總數。加上 `--show-skipped` 可查看每種原因和對應的檔案，也能搭配 `--dry-run` 預覽。
+
 ## 常用指令
 
 | 要做什麼 | 指令 |

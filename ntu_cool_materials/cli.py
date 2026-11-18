@@ -75,7 +75,7 @@ def main(argv: list[str] | None = None) -> int:
         set_lang(args.lang)
 
     if hasattr(args, "notebooklm_max_sources"):
-        if args.notebooklm_max_sources < 1:
+        if args.notebooklm_max_sources is not None and args.notebooklm_max_sources < 1:
             parser.error("--notebooklm-max-sources must be greater than zero")
         if args.notebooklm_url:
             if getattr(args, "no_notebooklm", False):
@@ -329,8 +329,10 @@ def _build_parser() -> argparse.ArgumentParser:
                             help="API storage_state.json path; otherwise use NOTEBOOKLM_HOME / notebooklm profile settings.")
         target.add_argument("--notebooklm-no-media", dest="notebooklm_include_media", action="store_false",
                             help="Skip local audio/video files (imported by default).")
-        target.add_argument("--notebooklm-max-sources", type=int, default=50,
-                            help="Total sources per notebook allowed by your plan (default: 50).")
+        target.add_argument("--show-skipped", action="store_true",
+                            help="List skipped NotebookLM files by reason (default: show only the count).")
+        target.add_argument("--notebooklm-max-sources", type=int,
+                            help="Override the detected sources-per-notebook limit (fallback: 50).")
 
     for target in (course, notebook):
         target.add_argument("--lang", choices=["zh", "en"], default="zh",
@@ -1251,6 +1253,7 @@ def _cmd_notebooklm(course_dir: Path | None, args: argparse.Namespace, *, guided
                 course_dir, notebook_url=args.notebooklm_url,
                 include_media=args.notebooklm_include_media,
                 max_sources=args.notebooklm_max_sources, storage_path=storage,
+                show_skipped=args.show_skipped,
             )
         is_interactive = (
             console.stdin_is_interactive()
@@ -1264,7 +1267,7 @@ def _cmd_notebooklm(course_dir: Path | None, args: argparse.Namespace, *, guided
                        max_sources=args.notebooklm_max_sources,
                        dry_run=getattr(args, "dry_run", False),
                        verify_only=getattr(args, "verify_only", False),
-                       storage_path=storage, interactive=is_interactive)
+                       storage_path=storage, interactive=is_interactive, show_skipped=args.show_skipped)
         return 0
     except (RuntimeError, OSError, ValueError) as exc:
         # Only our own errors are safe to show; library errors may carry login URLs.

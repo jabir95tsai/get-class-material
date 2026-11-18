@@ -3,6 +3,8 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -92,6 +94,65 @@ class NotebookLMTests(unittest.TestCase):
         plan = build_import_plan(self.root, include_media=False)
         self.assertEqual(len(plan.sources), 0)
         self.assertIn("--notebooklm-no-media", dict(plan.skipped)["week1/video.mp4"])
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg tools required")
+    def test_large_video_uploads_playable_numbered_parts_and_resumes(self):
+        video = self.root / "lecture.mp4"
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=24",
+             "-f", "lavfi", "-i", "sine=frequency=440", "-t", "4", "-c:v", "libx264",
+             "-g", "120", "-sc_threshold", "0", "-c:a", "aac", str(video)],
+            check=True, capture_output=True,
+        )
+        original = video.read_bytes()
+        limit = len(original) // 2
+        adapter = FakeAdapter()
+        with patch("ntu_cool_materials.notebooklm.MAX_FILE_BYTES", limit):
+            with contextlib.redirect_stdout(io.StringIO()) as progress, \
+                 patch("ntu_cool_materials.notebooklm.subprocess.run", wraps=subprocess.run) as run:
+                plan = build_import_plan(self.root)
+            self.assertIn("正在分割 lecture.mp4", progress.getvalue())
+            ffmpeg = [call.args[0] for call in run.call_args_list if call.args[0][0] == "ffmpeg"]
+            self.assertIn("copy", ffmpeg[0])
+            self.assertIn("libx264", ffmpeg[-1])
+            self.assertGreaterEqual(len(plan.sources), 3, plan.skipped)
+            for index, source in enumerate(plan.sources, 1):
+                self.assertEqual(source.title, f"lecture - part {index}.mp4")
+                self.assertLessEqual(source.path.stat().st_size, limit)
+                subprocess.run(
+                    ["ffmpeg", "-v", "error", "-xerror", "-i", str(source.path),
+                     "-map", "0:v:0", "-map", "0:a:0", "-f", "null", "-"],
+                    check=True, capture_output=True,
+                )
+            with self.assertRaises(NotebookLMError):
+                import_plan(plan, adapter, max_sources=len(plan.sources) - 1)
+            self.assertFalse(adapter.calls)
+            self.assertEqual(import_plan(plan, adapter).uploaded, len(plan.sources))
+            self.assertEqual(import_plan(build_import_plan(self.root), adapter).unchanged, len(plan.sources))
+        self.assertEqual(video.read_bytes(), original)
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg tools required")
+    def test_large_video_with_regular_keyframes_avoids_reencoding(self):
+        video = self.root / "lecture.mp4"
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=24",
+             "-t", "4", "-c:v", "libx264", "-g", "12", str(video)],
+            check=True, capture_output=True,
+        )
+        limit = video.stat().st_size * 2 // 3
+        with patch("ntu_cool_materials.notebooklm.MAX_FILE_BYTES", limit), \
+             patch("ntu_cool_materials.notebooklm.subprocess.run", wraps=subprocess.run) as run:
+            plan = build_import_plan(self.root)
+        self.assertGreaterEqual(len(plan.sources), 2, plan.skipped)
+        ffmpeg = [call.args[0] for call in run.call_args_list if call.args[0][0] == "ffmpeg"]
+        self.assertTrue(ffmpeg)
+        self.assertTrue(all("copy" in cmd for cmd in ffmpeg))
+        for source in plan.sources:
+            self.assertLessEqual(source.path.stat().st_size, limit)
+            subprocess.run(
+                ["ffmpeg", "-v", "error", "-xerror", "-i", str(source.path), "-f", "null", "-"],
+                check=True, capture_output=True,
+            )
 
     def test_cli_media_flags(self):
         from ntu_cool_materials.cli import _build_parser
