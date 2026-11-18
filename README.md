@@ -11,7 +11,7 @@ Download NTU COOL course files, announcements, pages, and videos into organized 
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-lightgrey)](#快速開始)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-📄 講義附件 · 📢 公告 · 📝 課程頁面 · 🎬 上課影片 · 🤖 NotebookLM 匯入（選用）
+📄 講義附件 · 📢 公告 · 📝 課程頁面 · 🎬 上課影片 · 🤖 NotebookLM 匯入
 
 </div>
 
