@@ -615,6 +615,7 @@ def download_youtube(
     stats = StageStats()
     cache = plan.course_dir / ".media-cache" / "youtube"
     jobs = {}
+    existing = {}
     with _manifest(plan) as store:
         for week in plan.weeks:
             title_map = build_video_title_map({"module": week.module})
@@ -627,6 +628,7 @@ def download_youtube(
                 if (store.artifact_current(key, target, vid, verify_hash=plan.verify_files)
                         or _adopt_legacy(store, key, target, vid, _valid_video)):
                     stats.skipped += 1
+                    existing[vid] = target
                     continue
                 jobs.setdefault(vid, []).append((key, target))
         if not jobs:
@@ -675,7 +677,7 @@ def download_youtube(
             ))
         cache.mkdir(parents=True, exist_ok=True)
         cache_paths = {vid: store.artifact_path(f"youtube-cache:{vid}", cache, f"{vid}.mp4") for vid in jobs}
-        missing = [vid for vid in jobs if not store.artifact_current(
+        missing = [vid for vid in jobs if vid not in existing and not store.artifact_current(
             f"youtube-cache:{vid}", cache_paths[vid], vid, verify_hash=plan.verify_files)]
         if missing:
             with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as tf:
@@ -694,11 +696,12 @@ def download_youtube(
             finally:
                 urls_file.unlink(missing_ok=True)
         for vid, destinations in jobs.items():
-            source = cache_paths[vid]
+            source = existing.get(vid, cache_paths[vid])
             if not _valid_video(source):
                 stats.failed.append(f"YouTube {vid}: no complete playable MP4")
                 continue
-            store.record_artifact(f"youtube-cache:{vid}", source, vid)
+            if source == cache_paths[vid]:
+                store.record_artifact(f"youtube-cache:{vid}", source, vid)
             copied, placed_all = False, True
             for key, target in destinations:
                 try:
@@ -717,7 +720,7 @@ def download_youtube(
                 except OSError as exc:
                     placed_all = False
                     stats.failed.append(f"{target.name}: {exc}")
-            if copied and placed_all:
+            if copied and placed_all and source == cache_paths[vid]:
                 # No hard links here (e.g. exFAT): don't keep a duplicate in the cache.
                 source.unlink(missing_ok=True)
     return stats
@@ -739,6 +742,16 @@ def _valid_video(path: Path) -> bool:
         return result.returncode == 0 and any(s.get("codec_type") == "video" for s in data.get("streams", []))
     except (OSError, ValueError, subprocess.TimeoutExpired):
         return False
+
+
+def _course_page(url: str) -> bool:
+    path = urllib.parse.urlsplit(url).path
+    return origin(url) == origin(f"https://{CANVAS_NETLOC}") and (path == "/courses" or path.startswith("/courses/"))
+
+
+def _maintenance_page(url: str) -> bool:
+    parts = urllib.parse.urlsplit(url)
+    return parts.hostname == "announcement.dlc.ntu.edu.tw" and parts.path.rstrip("/") == "/maintenance"
 
 
 def _ensure_logged_in(page, course_id: str | None, sso_timeout_sec: int) -> bool:
@@ -769,14 +782,19 @@ def _ensure_logged_in(page, course_id: str | None, sso_timeout_sec: int) -> bool
             return False
         print(f"    導向尚未完成,進入登入等待 ({page.url})")
 
-    if LOGIN_RE.search(page.url) or page.url == "about:blank":
+    if not (_course_page(page.url) or _maintenance_page(page.url)):
         print(f"    需要登入 — 請在開啟的瀏覽器視窗完成 NTU SSO (最多等 {sso_timeout_sec} 秒)")
         try:
-            page.wait_for_url(lambda u: not LOGIN_RE.search(u) and u != "about:blank",
+            page.wait_for_url(lambda u: _course_page(u) or _maintenance_page(u),
                               timeout=sso_timeout_sec * 1000)
         except PWTimeout:
             print("    SSO 登入逾時")
             return False
+    if _maintenance_page(page.url):
+        print("    NTU COOL 目前維護中，請稍後再試。")
+        return False
+    if not _course_page(page.url):
+        return False
     print(f"    已登入: {page.url}")
     return True
 
@@ -920,11 +938,11 @@ def _session_alive(page, course_id: str | None, settle_ms: int = 15000) -> bool:
         page.goto(target, wait_until="domcontentloaded", timeout=60000)
     except PWTimeout:
         pass
-    if not LOGIN_RE.search(page.url) and page.url != "about:blank":
-        return True
+    if _course_page(page.url) or _maintenance_page(page.url):
+        return _course_page(page.url)
     try:
-        page.wait_for_url(lambda u: not LOGIN_RE.search(u) and u != "about:blank", timeout=settle_ms)
-        return True
+        page.wait_for_url(lambda u: _course_page(u) or _maintenance_page(u), timeout=settle_ms)
+        return _course_page(page.url)
     except PWTimeout:
         return False
 

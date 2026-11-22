@@ -81,6 +81,14 @@ class EnsureLoggedInTests(unittest.TestCase):
         page.goto.assert_called_once()
         page.wait_for_url.assert_not_called()
 
+    def test_maintenance_before_or_after_sso(self) -> None:
+        maintenance = "https://announcement.dlc.ntu.edu.tw/maintenance"
+        for start in (maintenance, "https://web2.cc.ntu.edu.tw/saml/sso"):
+            page = _make_page(url=start, url_after_wait=maintenance)
+            self.assertFalse(course_pipeline._ensure_logged_in(page, None, 600))
+            if start == maintenance:
+                page.wait_for_url.assert_not_called()
+
     def test_redirects_to_sso_then_user_logs_in(self) -> None:
         """Stale cookies: goto lands on SSO, wait_for_url returns once the user
         finishes typing creds. Function returns True."""

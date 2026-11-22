@@ -449,7 +449,14 @@ class PipelineTests(unittest.TestCase):
              patch.object(p, "_valid_video", side_effect=lambda path: path.is_file()):
             plan = self.plan(items)
             self.assertEqual(p.download_youtube(plan, cookies_path=self.root / "none").done, 1)
-            self.assertTrue(cache.samefile(items[0]["_local_path"]))
+            target = Path(items[0]["_local_path"])
+            self.assertEqual(target.read_bytes(), b"synthetic mp4")
+            if cache.exists():
+                self.assertTrue(cache.samefile(target))
+            else:
+                # A missing cache is expected only when hard links are unavailable.
+                with self.assertRaises(OSError):
+                    p.os.link(target, cache)
             # Without hard-link support the copy stays and the cache goes.
             other = p.CoursePlan({"id": "1", "name": "Synthetic"}, "1", self.root / "fat",
                                  [p.WeekPlan("week1", {"id": 10, "items": items}, self.root / "fat/week1")])

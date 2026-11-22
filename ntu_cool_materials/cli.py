@@ -770,7 +770,7 @@ def _cmd_pick(base_url: str, args: argparse.Namespace) -> int:
             with spinner(loading):
                 return client.list_courses(enrollment_state=enrollment_state)
         except CanvasAPIError as exc:
-            if exc.status_code != 401:
+            if exc.status_code != 401 or browser is not None:
                 raise
             print(t(
                 "登入已過期,開啟瀏覽器重新登入...",
