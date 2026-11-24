@@ -39,6 +39,7 @@ Issues = "https://github.com/jabir95tsai/get_class_material/issues"
 
 [project.optional-dependencies]
 dev = ["build", "twine"]
+lint = ["ruff==0.16.1", "mypy==2.3.0"]
 excel = ["markitdown[xlsx,xls]>=0.1.2"]
 notebooklm = ["notebooklm-py[browser]==0.8.6", "markitdown[xlsx,xls]>=0.1.2"]
 
@@ -52,3 +53,15 @@ youtube-cookies = "ntu_cool_materials.youtube_cookies:main"
 
 [tool.setuptools.packages.find]
 include = ["ntu_cool_materials*"]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["F401", "F821", "F822", "F823", "RUF100"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["ntu_cool_materials/core"]
+strict = true
+disallow_any_explicit = true

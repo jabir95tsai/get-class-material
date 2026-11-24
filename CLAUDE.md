@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Python CLI that syncs NTU COOL (Canvas) course materials to a local `materials/` tree for downstream AI study workflows. Targets Python 3.11+. Standard library `urllib` is used for Canvas API calls; `requests` is only used by the CDN video downloader; `playwright` is an optional `[browser]` extra for cookie/session refresh.
+Python 3.11+ CLI for downloading NTU COOL (Canvas) materials to a local course library and optionally importing them into NotebookLM. Canvas API calls use `urllib`. The DASH downloader uses `requests`. Playwright and yt-dlp are runtime dependencies. The Chromium browser binary is installed separately.
 
 ## Commands
 
@@ -15,15 +15,20 @@ python -m unittest discover -s tests        # all tests
 python -m unittest tests.test_storage       # single module
 python -m unittest tests.test_storage.StorageTests.test_sanitize_component_replaces_unsafe_chars
 
-# Optional browser extra (Playwright + Chromium)
-pip install -e ".[browser]"
+# Static checks used by CI
+python -m pip install -e ".[lint]"
+python -m ruff check ntu_cool_materials tests
+python -m mypy
+python -m unittest discover -s tests -p test_core_imports.py
+
+# Install the browser binary for Playwright
 python -m playwright install chromium
 ```
 
-There is no linter, formatter, or type-checker configured in `pyproject.toml`. Tests are plain `unittest`, not pytest.
+Ruff checks unused imports, undefined names and unused `noqa` directives in the package and tests. Strict mypy checks `ntu_cool_materials/core` against Python 3.11. The import-direction test reads the Python syntax tree, including function-local imports. Core may import the standard library and other core modules. The tests use `unittest`.
 
 Console entry points (declared in `pyproject.toml`):
-- `ntu-cool-materials` → `ntu_cool_materials.cli:main` (subcommands: `courses`, `sync`, `announcements`, `download-course`, `pick`)
+- `ntu-cool-materials` → `ntu_cool_materials.cli:main` (subcommands: `courses`, `sync`, `announcements`, `download-course`, `pick`, `notebooklm`, `doctor`)
 - `get-class-material` → `ntu_cool_materials.cli:pick_main` (shortcut alias for `ntu-cool-materials pick`; school-neutral primary name)
 - `ntu-cool-gcm`       → same as `get-class-material` (legacy name, kept for existing users)
 - `ntu-cool-video`     → `cool_video:main` (DASH `.m4s` segment downloader + ffmpeg mux)
@@ -39,15 +44,13 @@ ntu-cool-materials download-course --course-id 60804
 ntu-cool-materials download-course --course-id 60804 --skip-cool-videos --skip-youtube
 ```
 
-`pick` (or shortcut `ntu-cool-gcm`) is the interactive entry point — lists active courses, prompts the user, then runs `download-course` on the choice. Critically, **the picker passes its open `BrowserSession` through to `download_course` via the `browser=` kwarg**, so a single SSO covers the whole pipeline (refresh + cool-videos in one Chromium context).
+`get-class-material` and `ntu-cool-gcm` start the interactive `pick` command. When `pick` opens a visible SSO window, it saves the login and closes the window after listing courses. Each selected course reads the saved headers. See the cool-video stage below for browser reuse and login recovery.
 
 On Windows, run with `python -X utf8 -m ntu_cool_materials download-course ...` if the console mojibakes CJK course/file names.
 
 macOS is supported alongside Windows. Mac-specific behaviour: user-facing hints go through `console.python_cmd()` / `console.pip_install_hint()` (macOS has `python3`, not `python`), so never hardcode `python -m pip` in a message; `cli.main` calls `console.ensure_ca_bundle()`, which points `SSL_CERT_FILE` at certifi when python.org's macOS build has an empty trust store (no "Install Certificates" run yet); node/ffmpeg install via Homebrew (doctor hints at https://brew.sh when `brew` is missing); and the yt-dlp cookie retry also tries Vivaldi/Opera/Chromium/Safari on macOS (Safari needs Full Disk Access for the terminal). On this dev Mac, the system Python is 3.9, so use the uv-managed `.venv` (`.venv/bin/python -m unittest discover -s tests`).
 
-Auth — set one of:
-- `NTU_COOL_TOKEN` env var (Canvas access token), or
-- `--headers-file .secrets/ntu_cool_headers.txt` (raw DevTools headers, used when token issuance is disabled).
+`sync` uses a Canvas token (`NTU_COOL_TOKEN` by default). `courses` and `announcements` accept a token or `--headers-file`. `pick` and `download-course` use saved session headers.
 
 ## Architecture
 
@@ -56,45 +59,54 @@ The package is built around **two parallel Canvas API clients** that the CLI pic
 - `canvas_client.CanvasClient` — Bearer-token auth. Sends `Authorization: Bearer <token>` only to the configured Canvas origin (see `_is_canvas_origin`); strips it on cross-origin file-download redirects (uses `NoRedirectHandler` + manual redirect loop) so signed CDN URLs don't leak the token.
 - `session_client.CanvasSessionClient` — cookie/header auth. Reads a DevTools "Copy request headers" blob via `read_headers_file` (also accepts JSON), drops hop-by-hop headers, and reuses them. The token-equivalent secret is the `cookie` header in `.secrets/ntu_cool_headers.txt`; `redact_headers` exists specifically to keep it out of logs.
 
-Both implement `list_paginated` by walking RFC 5988 `Link: rel="next"` headers (`parse_link_header`), with a 50ms sleep between pages.
+Both delegate `list_paginated` to `canvas_pagination.iter_page_items`, which walks RFC 5988 `Link: rel="next"` headers (`parse_link_header`), with a 50ms sleep between pages.
 
-`cli.py` is the orchestrator. `_courses_client` / `_announcements_client` resolve auth: if `--refresh-session` is set, they invoke `browser_session.refresh_headers_file` first to write a fresh `.secrets/ntu_cool_headers.txt`, then load it. The `sync` subcommand currently only supports token auth.
+`courses` and `announcements` can refresh their session headers through `browser_session.refresh_headers_file` before fetching course data.
 
 **Idempotent file sync** lives in `sync.py` + `storage.py`:
 - `sync.sync_course_materials` writes `materials/<course-name> (<id>)/modules.json` (modules + items, calling `list_module_items` per module if items aren't inlined), then iterates `list_course_files` and downloads each through `client.download_file_url`.
 - `storage.ManifestStore` is a SQLite (`materials/.ntu_cool_materials.sqlite3`) keyed by Canvas `file_id`. `needs_download` re-fetches when `updated_at` or `size` differs from the manifest, OR the local file is missing. After a successful download, `upsert_file` records `sha256` of the bytes on disk.
-- `storage.sanitize_component` is the single source of truth for filename safety: NFKC-normalize, replace `<>:"/\|?*` and control chars with `_`, prefix Windows reserved names (`CON`, `AUX`, …) with `_`, and clip to a max length. Used for both course directory names and per-file names. Don't reinvent this — call it.
-- `storage.course_directory_name(course)` is the single source of truth for the per-course directory name: `<course-name> (<id>)` after sanitization, max 160 chars. Used by `sync.sync_course_materials` and `announcements.write_announcements`. If you add a new subcommand that writes per-course, use this — never hardcode `course_<id>`.
+- `core.naming.sanitize_component` applies NFKC normalization and Windows filename rules to course directories and sync file names. Bulk module materials use `core.naming.sanitize_teacher_title` to preserve fullwidth punctuation.
+- `core.naming.course_directory_name(course)` is the single source of truth for the per-course directory name: `<course-name> (<id>)` after sanitization, max 160 chars. Used by `sync.sync_course_materials` and `announcements.write_announcements`. If you add a new subcommand that writes per-course, use this — never hardcode `course_<id>`.
 
-**Browser-session bridge** (`browser_session.py`) launches a Playwright persistent context at `.secrets/ntu_cool_browser_profile/`, navigates to a course page (or `/courses` if no course id), waits out an SSO/SAML login if needed (detected via `_looks_like_login`), probes the API once to confirm cookies work, then writes `cool.ntu.edu.tw` cookies into the headers file. With `--headless-refresh` it returns exit code 2 instead of opening a window when the session is gone.
+**Browser-session bridge.** `browser_session.refresh_headers_file` opens a persistent Playwright context, handles login when needed and probes the configured Canvas API before writing origin-bound headers and a sibling cookie jar. The standalone `ntu-cool-session --headless` returns 2 when the refresh reports that login is required.
 
-**Announcements** (`announcements.py`) — `html_to_markdown` is a tiny `HTMLParser` subclass that keeps links/images as Markdown and collects Canvas `/files/<id>` links (`canvas_file_links`) so attachments get downloaded; `announcement_markdown` produces a per-item section, and `write_announcements(out, course, announcements)` saves both `.announcements.json` (hidden; older visible `announcements.json` is migrated) and `announcements.md` under `materials/<course_directory_name>/announcements/`.
+**Announcements.** `html_to_markdown` and `canvas_file_links` use `MarkdownExtractor` to render post bodies and discover linked files. `write_announcements` writes `announcements.md` and `.announcements.json` under `<output>/<course_directory_name>/announcements/` and handles the legacy visible JSON filename.
 
 **Video pipeline** is independent from the Canvas sync:
 - `cool_video.py` (`ntu-cool-video`) downloads NTU COOL CDN MPEG-DASH segments. Walks `video-{quality}-{n}.m4s` and `audio-{quality}-{n}.m4s` from `--start` until a 404, merges them in order, then `ffmpeg -c copy` mux to MP4. `normalize_base_url` accepts either a directory URL or any numbered segment URL (it strips back to the parent). If the first numbered segment lacks an `ftyp/moov` box (`probe_top_level_mp4_boxes`), the user must supply an explicit init segment via `--video-init-url` / `--audio-init-url` (or `*-init-file`); the ffmpeg error path explicitly hints at this.
-- `media_naming.py` maps YouTube ids in module items to human-readable item titles (`build_video_title_map`); `sanitize_teacher_title` preserves CJK + fullwidth punctuation, unlike `storage.sanitize_component` which is more aggressive about whitespace collapsing. `extract_youtube_ids` is intentionally robust to malformed concatenated Canvas URLs.
-- **Critical yt-dlp flags** in `course_pipeline.YT_DLP_BASE_ARGS` (without these, yt-dlp picks legacy format 18 = 360p combined or fails with "video unavailable"/"DRM protected"): `--js-runtimes node --extractor-args "youtube:player_client=default,web,web_safari" -f "bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b" --cookies .secrets/youtube_cookies.txt`. The `web` client is what unlocks DASH formats above 360p; the JS runtime (node, since deno isn't installed here) is needed to solve YouTube's n-challenge. Source uploads in this course cap at 480p — that's a YouTube-side limit, not ours. The executable comes from `update_check.resolve_yt_dlp`, which also looks in this Python's Scripts dir because it is often not on PATH.
+- `core/naming.py` associates YouTube IDs with the first matching module title. `sanitize_teacher_title` uses NFC to preserve fullwidth punctuation. `extract_youtube_ids` handles concatenated Canvas URLs.
+- `course_pipeline.YT_DLP_BASE_ARGS` sets Node as the JavaScript runtime, selects YouTube player clients and prefers MP4 video with M4A audio. `_youtube_cookie_args` supplies authentication separately.
 
-**Bulk per-course pipeline** (`course_pipeline.py`, exposed as `download-course` subcommand). The orchestration is ordered so each stage is idempotent (skips items already present on disk):
-1. `plan_course` fetches modules (falling back to the per-module items endpoint when items aren't inlined) and reserves one directory per module through the manifest (`.ntu_cool_materials.sqlite3` in the course dir, `artifacts` table), so renames on Canvas don't move files. Week label comes from regex on module name (`Week\s*(\d+)`), so this works for any course that uses "Week 1 - 2/27" / "Week3 - 3/9" / etc. style names. Falls back to `module<index>` if no number found. Modules with no downloadable items are skipped.
-2. `download_files` — Files-type items via session-cookie download with cross-origin redirect handling (mirror of `CanvasClient.download_file_url`).
+**Bulk per-course pipeline** (`course_pipeline.download_course`)
+
+1. `plan_course` fetches the course and its modules, fetching missing or incomplete item lists separately. It creates the course directory and reserves stable module paths in the course SQLite manifest. Labels use `week<number>` when the module name contains a week number and `module<index>` otherwise. In each selected module, legacy `files/`, `pages/` and `videos/` files move up one level when their destinations are available. Collisions stay in place. **Preserve `metadata/`** because it may hold the only remaining source-to-file mapping.
+2. `save_announcements` refreshes the announcement snapshot and attachments. `download_files` fetches module files through the session client’s origin-scoped download path.
 3. `save_pages` — Pages via `/api/v1/courses/:id/pages/:url`, saved as `<safe_title>.md` (HTML → Markdown via `html_to_markdown`); linked Canvas files land in `<week>/attachments/`.
-4. `download_youtube` — one yt-dlp batch for every missing id into `<course>/.media-cache/youtube/<id>.mp4`, then hard-linked (copied on filesystems without hard links) to each titled target. Retries for an old yt-dlp or a login are skipped when ffmpeg is missing, since that failure can't be fixed by either. **Cookie strategy** (`_youtube_cookie_args`): try public/unlisted first with no auth (the common case — zero prompts). If videos fail AND no `youtube_cookies.txt` exists, `maybe_retry_youtube_with_login` asks once for consent, then the stage loops `_installed_cookie_browsers()` re-running yt-dlp with `--cookies-from-browser <name>` until nothing's failing. We read cookies from the user's real browser (not a Playwright login) because Google blocks sign-in on automation-controlled browsers. There is intentionally **no upfront cookie prompt** in `cli._cmd_pick`. A pre-existing `youtube_cookies.txt` (e.g. from the standalone `youtube-cookies` Playwright exporter) still wins via `--cookies`. Caveat: Chrome/Edge lock their cookie DB while running, so the retry warns the user to close the browser.
-5. `capture_and_download_cool_videos` — **single Playwright context** for the whole course. NTU SAML cookies on `cool.ntu.edu.tw` are session-only (die when Chromium exits), so a new Chromium process has no login on its own. Every login therefore also saves the full cookie jar to `<secrets>/ntu_cool_storage_state.json` (in `_dump_cookies_to_headers_file`), and the function launches **headless**, re-injects those cookies (`_inject_saved_login`, falling back to the headers file's `cookie:` line), and probes the course with `_session_alive`. Only if the saved login is dead does it reopen a visible window and wait up to 10 min for SSO (`--headless` makes that a failure instead). Refreshed cookies are written back at the end so the next course reuses them. It then walks every cool-video LTI module item and downloads `altSourceUri` (`transcoded.mp4`, single signed S3 URL — way simpler than the DASH segment walker in `cool_video.py`).
+4. After Pages, the pipeline checks the course Files area for additional visible files when the file stage is enabled. `download_youtube` batches missing YouTube IDs across weeks into `<course>/.media-cache/youtube/`, then links or copies each video to its titled destinations. An existing cookies file takes precedence. Otherwise the first attempt uses public access. After a failure, an interactive user can authorize a retry using browser cookies if ffmpeg is usable.
+5. The cool-video stage reuses an open course browser when available. Otherwise, if videos are pending, it opens a headless context, restores saved cookies and probes the course. If the probe fails, it closes that context. `--headless` records a failure at that point. In visible mode a fresh window handles SSO. The probe can fail during maintenance or a timeout as well as after expiry. The stage captures each pending item's view response and selects `altSourceUri` or `sourceUri`, including YouTube-backed sources.
 
-After the Files/Pages stages (and again at the start of a non-dry-run NotebookLM import), `spreadsheet_convert.convert_spreadsheets` writes a sibling `<name>.xlsx.md` for every `.xlsx`/`.xls` via markitdown, because NotebookLM rejects Excel. markitdown is an optional extra (`[excel]`, also pulled in by `[notebooklm]`); when it's missing the step prints one install hint and continues. It's idempotent by mtime and never fails the course run.
+When the file or Page stage is enabled, `spreadsheet_convert.convert_spreadsheets` uses the optional `[excel]` dependency (also included in `[notebooklm]`) to write `<workbook-name>.md` beside eligible `.xlsx` and `.xls` files. A current sidecar is reused. Conversion errors for individual workbooks are recorded and processing continues.
 
-Any stage error from Playwright (its own `Error` type, not `RuntimeError`) is recorded as a cool-video stage failure rather than escaping `download_course`. Session recovery (`_try_recover_session`) never opens a browser under `--headless` or without an interactive stdin.
+A Playwright exception inside the cool-video stage is recorded in the course report. For Canvas session recovery, `_try_recover_session` requires the native NTU origin and visible mode. Opening a new recovery browser also requires interactive stdin.
 
 - `youtube_cookies.py` (`youtube-cookies`) is unrelated to NTU COOL — it's a Playwright helper that exports a Netscape `cookies.txt` from a dedicated browser profile so yt-dlp can hit member-only / age-gated YouTube videos.
 
+`core/selection.py` contains the numeric picker and course filters. `youtube_files.py` places cached videos using a hard link or a copy. For NotebookLM, `notebooklm_plan.py` scans and prepares local sources, `notebooklm_journal.py` owns the import lock and state file, and `notebooklm.py` coordinates resumable uploads.
+
+## Preview and verification modes
+
+- `sync --dry-run` requires a token and queries Canvas for matching courses and files (and modules when enabled). With matching courses it opens the output SQLite manifest, which can create the directory, database and tables. It counts prospective downloads and skips writing course files and module snapshots.
+- `notebooklm --course-dir <dir> --dry-run` scans and hashes local candidates and skips Excel conversion, API login, upload and journal updates. With media enabled, a `.mp4` larger than 200,000,000 bytes can invoke ffprobe and ffmpeg and create temporary video parts. Add `--notebooklm-no-media` for a document-only preview.
+- `notebooklm --verify-only` prepares the local plan, which can generate Excel sidecars and temporary video parts, then checks remote source IDs when there are candidates. Verification leaves the remote notebook and local import journal unchanged. A missing login can still lead to a login prompt on a terminal.
+
 ## Conventions worth preserving
 
-- **Secrets stay in a `.secrets/` dir** (git-ignored). `materials/`, `ntu-cool-gcm_material/`, `*.sqlite3`, `*.m4s`, `*.part`, `.env` are also ignored. Never write cookies, tokens, or downloaded course files outside these paths. **Location resolution** lives in `cli._secrets_dir()`: it uses `./.secrets` when that dir already exists (repo devs, existing users — the default PowerShell start dir is `~`, so most users already have `~/.secrets`), otherwise `~/.ntu-cool-gcm/.secrets`. Anchoring to home prevents the `WinError 5` crash when launched from a non-writable CWD like `C:\WINDOWS\system32` (elevated-PowerShell default). All subcommand `--headers-file` / `--profile-dir` / `--youtube-cookies` defaults are built from this in `_build_parser`; the YouTube browser profile is derived from the cookies file's parent. When adding new secret paths, route them through `_secrets_dir()` — never hardcode `.secrets/...`.
-- **Default output dir is `ntu-cool-gcm_material/`** (relative to CWD) for the user-facing `pick` and `download-course` subcommands. Older subcommands (`announcements`, `sync`) still default to `materials/` for backwards compat. Both are gitignored.
+- **Session paths.** `session_paths.secrets_dir()` reuses an existing `./.secrets` directory and otherwise selects `~/.ntu-cool-gcm/.secrets` for default session headers, browser profiles and YouTube cookies. Windows NTU account credentials use a separate user-bound DPAPI file at `~/.ntu-cool-gcm/credentials/ntu-cool.dpapi`. NotebookLM can use explicit SDK profile or storage settings. `~/.ntu-cool-gcm/notebooklm-storage.json` records a storage path.
+- **Course output.** For `pick` and `download-course`, `--out` takes precedence. Otherwise `cli._resolve_output_dir` prefers `ntu-cool-gcm_material` under the user's Documents folder (the Windows known folder when available, otherwise `~/Documents`). It reuses `./ntu-cool-gcm_material` only if the Documents target is absent and the local directory already exists. `sync` and `announcements` default to `./materials`.
 - **`--version` / `-V`** reads `ntu_cool_materials.__version__`, which is derived from installed package metadata (`importlib.metadata`) — pyproject.toml is the single source of truth, never hardcode a version literal. `pick_main` intercepts `--version` before forwarding to the `pick` subparser.
-- **Update check** (`update_check.check_for_update`) runs on every `pick` (in a background thread overlapping `ensure_ready`, so zero added latency) and in `doctor`'s header. It hits PyPI's JSON API at most once per 24h (cached in `<secrets>/update_check.json`), compares via a lenient numeric-tuple parse, and is **silent on any error** (offline, parse failure) — a startup nag must never block or crash. Returns `None` for the `0.0.0+unknown` source-tree version so devs aren't nagged. On `pick`, a newer version triggers `update_check.offer_self_update`: a [Y/n] prompt (never in non-interactive runs or editable installs) that pip-upgrades, verifies the new version actually landed, then reruns the same argv (`main` stores it as `args.relaunch_argv`) via `python -m ntu_cool_materials` — the current process keeps the old modules, so it must not continue.
-- **Dependency auto-update** (`update_check.auto_update_dependencies`) runs synchronously at the start of `pick`, *before* `ensure_ready` (which imports Playwright — never upgrade it under a live import). Same once-a-day PyPI cache per package (`<secrets>/update_check_<pkg>.json`); if newer, `pip install --upgrade` yt-dlp / playwright without asking, and after a Playwright upgrade also `playwright install chromium` (each release pins its own Chromium). Never raises.
+- **Package updates.** `pick` checks for a newer `get-class-material` in a background thread and waits up to two seconds for the result after setup checks. `doctor` checks when printing its header. `check_for_update` caches successful lookups for 24 hours by default. A failed lookup can reuse an older result and leaves the timestamp untouched. In an interactive `pick`, a released installation defaults to upgrading (`[Y/n]`). A detected editable installation requires explicit consent to switch to PyPI (`[y/N]`). On acceptance the CLI runs pip, checks the installed version, then relaunches the original arguments when the version check succeeds.
+- **Dependency updates.** Before `ensure_ready` imports Playwright, `pick` synchronously checks installed yt-dlp and Playwright versions using a separate cache per package. When a newer version is found, it runs pip without prompting. A successful Playwright pip invocation is followed by `playwright install chromium`. If browser installation fails, the Python package may already have changed.
 - **Cross-origin token hygiene**: when adding new download paths, follow the `CanvasClient.download_file_url` pattern — only attach `Authorization` when `_is_canvas_origin(url)` is true, since Canvas redirects to signed S3/CDN URLs that already carry their own auth.
 - **All Canvas list endpoints paginate**; route new ones through `list_paginated`, not bare `urlopen`.
 - Use `urllib.parse.quote(..., safe="")` for path components built from Canvas ids (see `canvas_client.list_course_files`).
