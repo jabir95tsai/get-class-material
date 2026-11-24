@@ -27,6 +27,7 @@ classifiers = [
 ]
 dependencies = [
     "requests>=2.31",
+    "pywin32>=306; sys_platform == 'win32'",
     "playwright>=1.45",
     "yt-dlp>=2024.1.1",
 ]
