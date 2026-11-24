@@ -231,7 +231,7 @@ class PipelineTests(unittest.TestCase):
         for run in (1, 2):
             with self.subTest(run=run):
                 plan = p.plan_course(self.client, "1", self.root)
-                self.assertEqual(plan.weeks[0].week_dir, week)
+                self.assertTrue(plan.weeks[0].week_dir.samefile(week))
                 for name in ("metadata/mapping.json", "files/notes.pdf", "notes.pdf"):
                     self.assertEqual((week / name).read_bytes(), originals[name])
                 for name in ("pages/lecture.md", "videos/lecture.mp4"):
@@ -319,6 +319,9 @@ class PipelineTests(unittest.TestCase):
                                  for call in api.call_args_list))
 
     def test_week_title_supersedes_prior_files_listing(self):
+        # Exercise two spellings of the course root even on runners without temp-dir aliases.
+        (self.root / "alias").mkdir()
+        self.root = self.root / "alias" / ".."
         info = {"id": 7, "display_name": "raw.xlsx", "size": 3, "updated_at": "first",
                 "url": "https://cool.ntu.edu.tw/files/7/download"}
         self.client.list_course_files.return_value = [info]

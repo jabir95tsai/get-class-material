@@ -368,7 +368,7 @@ def _reuse_files_copy(store, course_dir, fid, key, target, version):
     if row is None:
         return None
     old = Path(row["path"])
-    if old.resolve().parent != course_dir / "files" or old == target or old.is_symlink() or not old.is_file():
+    if old.resolve().parent != course_dir.resolve() / "files" or old == target or old.is_symlink() or not old.is_file():
         return None
     if not target.exists() and store.artifact_current(old_key, old, version, verify_hash=True):
         target.parent.mkdir(parents=True, exist_ok=True)

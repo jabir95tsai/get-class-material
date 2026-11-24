@@ -330,12 +330,12 @@ class APITests(unittest.TestCase):
         path = self.root / "week2" / "prices.xlsx.md"
         path.parent.mkdir()
         path.write_text("# prices.xlsx\n\n## Bonds\n| Name | Rate |\n| --- | --- |\n| A\\_B | 0.05 |\n", encoding="utf8")
-        source = next(s for s in build_import_plan(self.root).sources if s.path == path)
+        source = next(s for s in build_import_plan(self.root).sources if s.path.samefile(path))
         expected = b"### prices.xlsx\n#### Bonds\n| Name | Rate |\n| ------ | ------ |\n| A_B | 0.05 |\n\n"
         self.assertEqual(_workbook_export(source), expected)
         path.write_text(path.read_text().replace("0.05", "0.06"))
         self.assertIsNone(_workbook_export(source))
-        changed = next(s for s in build_import_plan(self.root).sources if s.path == path)
+        changed = next(s for s in build_import_plan(self.root).sources if s.path.samefile(path))
         self.assertNotEqual(_workbook_export(changed), expected)
 
     def test_readonly_adapter_refuses_creation_and_upload(self):
