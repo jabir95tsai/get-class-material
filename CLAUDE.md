@@ -17,7 +17,7 @@ python -m unittest tests.test_storage.StorageTests.test_sanitize_component_repla
 
 # Static checks used by CI
 python -m pip install -e ".[lint]"
-python -m ruff check ntu_cool_materials tests
+python -m ruff check src tests
 python -m mypy
 python -m unittest discover -s tests -p test_core_imports.py
 
@@ -25,7 +25,7 @@ python -m unittest discover -s tests -p test_core_imports.py
 python -m playwright install chromium
 ```
 
-Ruff checks unused imports, undefined names and unused `noqa` directives in the package and tests. Strict mypy checks `ntu_cool_materials/core` against Python 3.11. The import-direction test reads the Python syntax tree, including function-local imports. Core may import the standard library and other core modules. The tests use `unittest`.
+Ruff checks unused imports, undefined names and unused `noqa` directives in the package and tests. Strict mypy checks `src/ntu_cool_materials/core` against Python 3.11. The import-direction test reads the Python syntax tree, including function-local imports. Core may import the standard library and other core modules. The tests use `unittest`.
 
 Console entry points (declared in `pyproject.toml`):
 - `ntu-cool-materials` → `ntu_cool_materials.cli:main` (subcommands: `courses`, `sync`, `announcements`, `download-course`, `pick`, `notebooklm`, `doctor`)

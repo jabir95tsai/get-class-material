@@ -10,7 +10,7 @@ from pathlib import Path
 PACKAGE = "ntu_cool_materials"
 CORE = f"{PACKAGE}.core"
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT
+SRC = ROOT / "src"
 
 
 def forbidden_imports(source: str, package: str) -> Iterator[tuple[int, str]]:
