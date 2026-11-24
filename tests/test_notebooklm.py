@@ -5,6 +5,7 @@ import io
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,7 @@ from unittest.mock import patch
 
 from ntu_cool_materials import cli
 from ntu_cool_materials.storage import sha256_file
+from ntu_cool_materials.notebooklm_journal import import_lock
 from ntu_cool_materials.notebooklm import (
     STATE_NAME, NotebookLMError, build_import_plan, import_plan,
     validate_notebook_url,
@@ -36,6 +38,9 @@ class FakeAdapter:
 
     def ready_sources(self):
         return self.ready.copy()
+
+    def check_pending(self, source, title, source_id):
+        return True, None
 
     def source_count(self):
         return len(self.ready) + self.extra_sources
@@ -299,6 +304,32 @@ class NotebookLMTests(unittest.TestCase):
         with self.assertRaises(NotebookLMError):
             import_plan(build_import_plan(self.root), browser)
         self.assertEqual(browser.open_calls, [])
+
+    def test_import_lock_blocks_concurrent_import_and_recovers_after_exit(self):
+        script = (
+            "import os, sys\n"
+            "from pathlib import Path\n"
+            "from ntu_cool_materials.notebooklm_journal import import_lock\n"
+            "with import_lock(Path(sys.argv[1])):\n"
+            "    print('locked', flush=True)\n"
+            "    sys.stdin.read()\n"
+            "    os._exit(0)\n"
+        )
+        with subprocess.Popen(
+            [sys.executable, "-c", script, str(self.root)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+        ) as worker:
+            try:
+                self.assertEqual(worker.stdout.readline().strip(), "locked")
+                with self.assertRaises(NotebookLMError), import_lock(self.root):
+                    self.fail("An active import must hold the lock")
+            finally:
+                worker.stdin.close()
+                self.assertEqual(worker.wait(timeout=10), 0)
+
+        with import_lock(self.root):
+            pass
+        self.assertFalse((self.root / ".notebooklm-import.lock").exists())
 
     def test_changed_file_since_planning_is_not_uploaded(self):
         source = self.file()

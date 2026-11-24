@@ -803,6 +803,24 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual((week / "Kept.pdf").read_bytes(), b"new")
             self.assertEqual(p.download_files(self.plan(items), self.client).skipped, 2)
 
+    def test_legacy_file_with_identical_content_is_kept_and_then_skips_network(self):
+        item = {"id": 1, "content_id": 1, "type": "File", "title": "Lecture.pdf"}
+        plan = self.plan([item])
+        self.client.get_json.return_value = {"size": 3, "updated_at": "v1"}
+        with p._manifest(plan) as store:
+            path = store.artifact_path("10:file:1", plan.weeks[0].week_dir, "Lecture.pdf")
+            path.parent.mkdir()
+            path.write_bytes(b"old")
+            store.record_artifact("10:file:1", path, json.dumps(["v1", None, 3]))
+        before = path.stat().st_mtime_ns
+
+        with patch.object(http_io, "open_url", return_value=Response(b"old")) as transfer:
+            stats = p.download_files(plan, self.client)
+            self.assertEqual((stats.skipped, stats.done, stats.failed), (1, 0, []))
+            self.assertEqual(path.stat().st_mtime_ns, before)
+            self.assertEqual(p.download_files(plan, self.client).skipped, 1)
+        transfer.assert_called_once()
+
     def test_legacy_manifest_cannot_keep_a_same_size_file_marked_current(self):
         item = {"id": 1, "content_id": 1, "type": "File", "title": "Lecture.pdf"}
         plan = self.plan([item])
@@ -813,16 +831,13 @@ class PipelineTests(unittest.TestCase):
             path.write_bytes(b"old")
             store.record_artifact("10:file:1", path, json.dumps(["v1", None, 3]))
 
-        def download(_fid, target, _headers, **_kwargs):
-            target.write_bytes(b"new")
-
         plan.verify_files = True
         with patch.object(p, "_download_canvas_file", side_effect=http_io.DownloadError("interrupted")):
             self.assertTrue(p.download_files(plan, self.client).failed)
         self.assertEqual(path.read_bytes(), b"old")
         with p._manifest(plan) as store:
             self.assertEqual(store.artifact("10:file:1")["version"], json.dumps(["v1", None, 3]))
-        with patch.object(p, "_download_canvas_file", side_effect=download) as transfer:
+        with patch.object(http_io, "open_url", return_value=Response(b"new")) as transfer:
             self.assertEqual(p.download_files(plan, self.client).done, 1)
             self.assertEqual(path.read_bytes(), b"new")
             self.assertEqual(p.download_files(plan, self.client).skipped, 1)

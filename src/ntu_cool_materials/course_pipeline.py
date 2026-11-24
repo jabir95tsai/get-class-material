@@ -275,12 +275,14 @@ def _progress(label: str):
 
 
 def _download_canvas_file(file_id: str, target: Path, headers: dict[str, str], *,
-                          base_url=f"https://{CANVAS_NETLOC}", expected_size=None) -> None:
-    print(f"  [download] {target.name}")
+                          base_url=f"https://{CANVAS_NETLOC}", expected_size=None) -> bool:
+    action = "verify" if target.is_file() else "download"
+    print(f"  [{action}] {target.name}")
     url = f"{base_url.rstrip('/')}/files/{urllib.parse.quote(file_id, safe='')}/download?download_frd=1"
     def scoped(current):
         return headers if origin(current) == origin(base_url) else {"User-Agent": "ntu-cool-materials/0.1"}
-    download_http(url, target, scoped, identity=f"{base_url}/file/{file_id}", expected_size=expected_size)
+    return download_http(url, target, scoped, identity=f"{base_url}/file/{file_id}",
+                         expected_size=expected_size, keep_identical=True) is not None
 
 
 def _download_signed_url(url: str, target: Path) -> None:
@@ -455,10 +457,14 @@ def download_files(plan: CoursePlan, client: CanvasSessionClient, *, only_unlist
             for future in as_completed(pending):
                 key, target, version = pending[future]
                 try:
-                    future.result()
+                    replaced = future.result()
                     store.record_artifact(key, target, version)
-                    stats.done += 1
-                    print(f"  [file] {target.name}")
+                    if replaced is False:
+                        stats.skipped += 1
+                        print(f"  [unchanged] {target.name}")
+                    else:
+                        stats.done += 1
+                        print(f"  [file] {target.name}")
                 except SessionExpiredError as exc:
                     expired = exc
                 except urllib.error.HTTPError as exc:

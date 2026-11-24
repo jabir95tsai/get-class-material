@@ -1,4 +1,5 @@
 import contextlib
+import importlib.util
 import io
 import json
 import os
@@ -159,13 +160,28 @@ class APITests(unittest.TestCase):
         self.assertEqual(self.run_import().unchanged, 1)
         self.assertEqual(self.api.uploads, 1)
 
-    def test_unknown_upload_is_not_replayed_and_secret_not_displayed(self):
+    def test_missing_pending_upload_is_retried_only_on_next_run(self):
         self.api.fail_upload = True
         with self.assertRaises(NotebookLMError) as failure:
             self.run_import()
         self.assertNotIn("secret", str(failure.exception))
-        with self.assertRaisesRegex(NotebookLMError, "先前上傳結果不明"):
+        self.assertEqual(self.api.uploads, 1)
+        self.api.fail_upload = False
+        self.assertEqual(self.run_import().uploaded, 1)
+        self.assertEqual(self.api.uploads, 2)
+
+    def test_pending_without_id_is_recovered_from_verified_remote_content(self):
+        self.api.fail_upload = True
+        with self.assertRaises(NotebookLMError):
             self.run_import()
+        self.api.fail_upload = False
+        source = self.plan.sources[0]
+        self.api.rows.append(SimpleNamespace(id="recovered", title=source.title, status=2))
+        with patch.object(NotebookLMAPIAdapter, "matches_original", return_value=True) as verify:
+            self.assertEqual(self.run_import().unchanged, 1)
+        verify.assert_called_once_with("recovered", source)
+        state = json.loads((self.root / STATE_NAME).read_text())
+        self.assertEqual(state["notebooks"][URL]["sources"][source.digest]["source_id"], "recovered")
         self.assertEqual(self.api.uploads, 1)
 
     def test_failed_revision_does_not_match_original_title_in_import_or_verify(self):
@@ -176,6 +192,7 @@ class APITests(unittest.TestCase):
         with self.assertRaises(NotebookLMError):
             self.run_import()
         self.api.fail_upload = False
+        self.api.rows.append(SimpleNamespace(id="unverified", title="lecture (2).md", status=2))
         with self.assertRaisesRegex(NotebookLMError, "先前上傳結果不明"):
             self.run_import()
         with patch("ntu_cool_materials.notebooklm_api.api_client_context", return_value=self.api):
@@ -325,6 +342,37 @@ class APITests(unittest.TestCase):
         self.assertEqual(self.api.uploads, 1)
         self.assertEqual(json.loads(journal.read_text())["notebooks"][URL]["sources"][digest]["source_id"], original_id)
 
+    @unittest.skipUnless(importlib.util.find_spec("markdown_it"), "requires the NotebookLM Markdown parser")
+    def test_legacy_announcement_verifies_reformatted_markdown_and_links(self):
+        from unittest.mock import MagicMock
+
+        path = self.announcement_file()
+        path.write_text("## Update\n\n- Read [this](<https://example.com/a>)\n  before class.\n", encoding="utf-8")
+        plan = build_import_plan(self.root)
+        source = next(s for s in plan.sources if s.path == path)
+        journal = self.root / STATE_NAME
+        state = {"version": 1, "notebooks": {URL: {"sources": {
+            source.digest: {"title": "announcements", "status": "complete"},
+        }}}}
+        atomic_write_text(journal, json.dumps(state))
+        self.api.rows.append(SimpleNamespace(
+            id="legacy", title="announcements", status=2,
+            download_url="https://contribution.usercontent.google.com/download?id=test",
+        ))
+        self.api.auth = SimpleNamespace(cookie_jar=None)
+        httpx = MagicMock()
+        response = httpx.Client.return_value.__enter__.return_value.stream.return_value.__enter__.return_value
+        response.status_code = 200
+        response.iter_bytes.side_effect = [
+            [b"#### Update\n\n* Read [this](https://example.com/b) before class.\n"],
+            [b"#### Update\n\n* Read [this](https://example.com/a) before class.\n"],
+        ]
+        with patch.dict("sys.modules", {"httpx": httpx}), \
+             patch("ntu_cool_materials.notebooklm_api.api_client_context", return_value=self.api):
+            self.assertEqual(run_api_import(self.root, notebook_url=URL, plan=plan).unverified, 1)
+            self.assertEqual(run_api_import(self.root, notebook_url=URL, plan=plan).unverified, 0)
+        self.assertEqual(json.loads(journal.read_text())["notebooks"][URL]["sources"][source.digest]["source_id"], "legacy")
+
     def test_workbook_export_checks_all_cells_and_sheet_names(self):
         from ntu_cool_materials.notebooklm_api import _workbook_export
         path = self.root / "week2" / "prices.xlsx.md"
@@ -436,6 +484,21 @@ class APITests(unittest.TestCase):
         path.write_text("first announcement", encoding="utf-8")
         return path
 
+    def test_updated_statistics_syllabus_replaces_managed_copy_and_restores_title(self):
+        path = self.root / "module1" / "Syllabus_Statistics_Fall26 (NTU).md"
+        path.parent.mkdir()
+        path.write_text("Original syllabus", encoding="utf-8")
+        title = "module1 - " + path.name
+        with patch("ntu_cool_materials.notebooklm_api.api_client_context", return_value=self.api):
+            run_api_import(self.root, notebook_url=URL)
+            old = next(row for row in self.api.rows if row.title == title)
+            path.write_text("Updated syllabus", encoding="utf-8")
+            self.assertEqual(run_api_import(self.root, notebook_url=URL).uploaded, 1)
+            rows = [row for row in self.api.rows if "Syllabus" in row.title]
+            self.assertEqual([row.title for row in rows], [title])
+            self.assertNotEqual(rows[0].id, old.id)
+            self.assertEqual(run_api_import(self.root, notebook_url=URL).uploaded, 0)
+
     def test_updated_announcements_replace_only_managed_source_after_upload(self):
         path = self.announcement_file()
         with patch('ntu_cool_materials.notebooklm_api.api_client_context', return_value=self.api):
@@ -455,6 +518,30 @@ class APITests(unittest.TestCase):
             # Reverting to earlier content still replaces the current summary.
             path.write_text("first announcement", encoding="utf-8")
             self.assertEqual(run_api_import(self.root, max_sources=6).uploaded, 1)
+
+    def test_announcement_ready_with_md_suffix_on_upload_and_after_interruption(self):
+        path = self.announcement_file()
+        (self.root / "lecture.md").unlink()
+        wait = self.api.sources.wait_until_ready
+
+        async def wait_with_extension(notebook_id, source_id, *, timeout):
+            row = await wait(notebook_id, source_id, timeout=timeout)
+            row.title += ".md"
+            return row
+
+        self.api.sources.wait_until_ready = wait_with_extension
+        with patch("ntu_cool_materials.notebooklm_api.api_client_context", return_value=self.api):
+            self.assertEqual(run_api_import(self.root, notebook_url=URL).uploaded, 1)
+            path.write_text("Updated announcement", encoding="utf-8")
+            self.api.fail_wait = True
+            with self.assertRaisesRegex(NotebookLMError, "pending"):
+                run_api_import(self.root, notebook_url=URL)
+            self.api.fail_wait = False
+            self.api.rows[-1].title += ".md"
+            self.api.rows[-1].status = 2
+            self.assertEqual(run_api_import(self.root, notebook_url=URL).unchanged, 1)
+        self.assertEqual(self.api.uploads, 2)
+        self.assertEqual([row.id for row in self.api.rows], ["source-2"])
 
     def test_announcement_delete_failure_is_retried_without_reupload(self):
         (self.root / "lecture.md").unlink()
@@ -502,7 +589,7 @@ class APITests(unittest.TestCase):
             self.assertEqual(run_api_import(self.root).uploaded, 0)
         self.assertIn("duplicate", {r.id for r in self.api.rows})
 
-    def test_failed_announcement_upload_is_not_replayed(self):
+    def test_failed_announcement_is_retried_after_confirming_absence(self):
         (self.root / "lecture.md").unlink()
         path = self.announcement_file()
         with patch('ntu_cool_materials.notebooklm_api.api_client_context', return_value=self.api):
@@ -512,10 +599,11 @@ class APITests(unittest.TestCase):
             self.api.fail_upload = True
             with self.assertRaises(NotebookLMError):
                 run_api_import(self.root, notebook_url=URL)
-            with self.assertRaises(NotebookLMError):
-                run_api_import(self.root)
-        self.assertEqual(self.api.uploads, 2)
-        self.assertEqual({r.id for r in self.api.rows}, {"source-1", "manual"})
+            self.assertEqual({r.id for r in self.api.rows}, {"source-1", "manual"})
+            self.api.fail_upload = False
+            self.assertEqual(run_api_import(self.root).uploaded, 1)
+        self.assertEqual(self.api.uploads, 3)
+        self.assertEqual({r.id for r in self.api.rows}, {"source-3", "manual"})
 
     def test_full_notebook_keeps_old_announcement(self):
         (self.root / "lecture.md").unlink()
@@ -536,7 +624,7 @@ class APITests(unittest.TestCase):
             (self.root / "notes.md").write_text("new notes", encoding="utf-8")
             result = run_api_import(self.root, max_sources=3)
         self.assertEqual(result.uploaded, 2)
-        self.assertEqual({r.title for r in self.api.rows}, {"lecture.md", "announcements (2)", "notes.md"})
+        self.assertEqual({r.title for r in self.api.rows}, {"lecture.md", "announcements", "notes.md"})
 
     def test_wait_failure_preserves_old_announcement_and_reconciles_by_id(self):
         (self.root / "lecture.md").unlink()

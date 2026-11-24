@@ -13,7 +13,7 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 from .canvas_errors import SessionExpiredError
-from .storage import atomic_write_text
+from .storage import atomic_write_text, sha256_file
 
 
 class DownloadError(RuntimeError):
@@ -115,7 +115,8 @@ def _integer(headers, name):
         raise DownloadError(f"Invalid {name} response header") from None
 
 
-def stream_response(response, target: Path, *, offset=0, expected_size=None, progress=None, validate=None):
+def stream_response(response, target: Path, *, offset=0, expected_size=None, progress=None, validate=None,
+                    keep_identical=False) -> bool:
     """Validate the body before promoting .part; preserve the previous target."""
     target.parent.mkdir(parents=True, exist_ok=True)
     part = target.with_name(target.name + ".part")
@@ -163,12 +164,17 @@ def stream_response(response, target: Path, *, offset=0, expected_size=None, pro
         raise DownloadError("Empty response")
     if validate is not None and not validate(part):
         raise DownloadError("Downloaded media failed validation")
+    if (keep_identical and target.is_file() and target.stat().st_size == offset + written
+            and sha256_file(target) == sha256_file(part)):
+        part.unlink()
+        return False
     part.replace(target)
+    return True
 
 
 def download(url: str, target: Path, headers_for_url, *, identity=None, expected_size=None,
-             timeout=120, attempts=3, progress=None, validate=None):
-    """Resume only with a persisted validator belonging to the same resource."""
+             timeout=120, attempts=3, progress=None, validate=None, keep_identical=False) -> Path | None:
+    """Resume with a matching validator and return None when identical bytes are kept."""
     key = hashlib.sha256((identity or safe_url(url)).encode()).hexdigest()
     part = target.with_name(target.name + ".part")
     metadata = part.with_name(part.name + ".json")
@@ -198,9 +204,10 @@ def download(url: str, target: Path, headers_for_url, *, identity=None, expected
                 elif offset and not validator:
                     validator = saved.get("validator")
                 atomic_write_text(metadata, json.dumps({"identity": key, "validator": validator}))
-                stream_response(response, target, offset=offset, expected_size=expected_size, progress=progress, validate=validate)
+                replaced = stream_response(response, target, offset=offset, expected_size=expected_size,
+                                           progress=progress, validate=validate, keep_identical=keep_identical)
             metadata.unlink(missing_ok=True)
-            return target
+            return target if replaced else None
         except urllib.error.HTTPError as exc:
             if exc.code == 416 and offset:
                 metadata.unlink(missing_ok=True)

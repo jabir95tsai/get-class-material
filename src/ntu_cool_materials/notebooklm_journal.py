@@ -1,6 +1,7 @@
 """Read, validate, lock and atomically persist the per-course NotebookLM journal."""
 from __future__ import annotations
 
+import errno
 import json
 import os
 import tempfile
@@ -8,7 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .i18n import t
-from .notebooklm_models import ANNOUNCEMENT_PATHS, NotebookLMError, validate_notebook_url
+from .notebooklm_models import ANNOUNCEMENT_PATHS, SYLLABUS_PATHS, NotebookLMError, validate_notebook_url
 from .storage import hide_file
 
 
@@ -33,6 +34,8 @@ def read_state(path: Path) -> dict:
                     raise ValueError
                 if "announcement_path" in entry and entry["announcement_path"] not in ANNOUNCEMENT_PATHS:
                     raise ValueError
+                if "syllabus_path" in entry and entry["syllabus_path"] not in SYLLABUS_PATHS:
+                    raise ValueError
         if state.get("default_url"):
             validate_notebook_url(state["default_url"])
         return state
@@ -56,16 +59,34 @@ def save_state(path: Path, state: dict) -> None:
 
 @contextmanager
 def import_lock(root: Path):
-    """A leftover .notebooklm-import.lock prevents concurrent or interrupted imports from overlapping."""
-    path = root / ".notebooklm-import.lock"
-    try:
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except FileExistsError as exc:
-        raise NotebookLMError(t("此課程已有匯入工作或遺留鎖；確認沒有匯入程式後，才移除 .notebooklm-import.lock。",
-                                "Another import is running for this course, or a stale lock was left; only remove "
-                                ".notebooklm-import.lock once you're sure no import is running.")) from exc
-    try:
-        os.close(fd)
-        yield
-    finally:
-        path.unlink(missing_ok=True)
+    """Serialize imports and let the OS release the lock when a process exits."""
+    marker = root / ".notebooklm-import.lock"
+    # Keep the same file on disk so every process locks the same filesystem object.
+    with (root / ".notebooklm-import.guard").open("a+b") as guard:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                guard.seek(0)
+                msvcrt.locking(guard.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(guard.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno not in {errno.EACCES, errno.EAGAIN}:
+                raise
+            raise NotebookLMError(t("此課程已有匯入工作正在執行，請等它結束後再試。",
+                                    "An import is already running for this course. Wait for it to finish before retrying.")) from exc
+
+        # Older versions create a file here. A directory marks an import protected by the OS lock.
+        try:
+            marker.mkdir()
+        except FileExistsError as exc:
+            if marker.is_symlink() or not marker.is_dir():
+                raise NotebookLMError(t("此課程有舊版匯入鎖。請確認舊版匯入已結束，再將 .notebooklm-import.lock 改名。",
+                                        "This course has a legacy import lock. Confirm the old import has stopped before renaming .notebooklm-import.lock.")) from exc
+        try:
+            yield
+        finally:
+            marker.rmdir()

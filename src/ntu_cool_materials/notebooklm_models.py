@@ -11,6 +11,10 @@ from .i18n import t
 
 
 ANNOUNCEMENT_PATHS = {"announcements/announcements.md", "announcements.md"}
+SYLLABUS_PATHS = {
+    "module1/Syllabus_Statistics_Fall26 (NTU).md",
+    "module1/Syllabus_Statistics_Fall26 (TAICA).md",
+}
 
 
 class NotebookLMError(RuntimeError):
@@ -61,9 +65,11 @@ class NotebookAdapter(Protocol):
     def open_notebook(self, url: str | None, title: str) -> str: ...
     def ready_sources(self) -> dict[str, str]: ...
     def matches_original(self, source_id: str, source: Source) -> bool: ...
+    def check_pending(self, source: Source, title: str, source_id: str | None) -> tuple[bool, str | None]: ...
     def source_count(self) -> int: ...
     def upload(self, path: Path, title: str, *, on_created: Callable[[str], None]) -> None: ...
     def delete_sources(self, source_ids: set[str], *, keep_source_id: str) -> None: ...
+    def restore_source_title(self, source_id: str, title: str) -> bool: ...
 
 
 def validate_notebook_url(value: str) -> str:
@@ -92,3 +98,9 @@ def is_announcement_title(title: str) -> bool:
     clean = strip_legacy_hash(title)
     return bool(re.fullmatch(
         r"(?:announcements|announcements - announcements)(?: \(\d+\))?(?:\.md)?", clean))
+
+
+def upload_title_matches(expected: str, actual: str | None) -> bool:
+    return actual == expected or (
+        is_announcement_title(expected) and not expected.endswith(".md") and actual == expected + ".md"
+    )
