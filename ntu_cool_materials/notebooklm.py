@@ -1,297 +1,58 @@
-"""Opt-in, resumable uploads to personal NotebookLM.
-
-No Canvas cookies are used. The API transport (notebooklm_api) is deliberately
-isolated from local planning and journaling.
-"""
+"""Coordinate resumable uploads using the planned sources and per-course journal."""
 from __future__ import annotations
 
-import json
-import math
-import os
-import re
 import shutil
-import subprocess
 import tempfile
-import weakref
-from contextlib import contextmanager
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from pathlib import Path
-from typing import Protocol
-from urllib.parse import urlsplit
 
 from .i18n import t
+from .notebooklm_journal import STATE_NAME, import_lock, read_state, save_state
+from .notebooklm_models import (
+    ANNOUNCEMENT_PATHS, ImportPlan, ImportResult, NotebookAdapter, NotebookLMError,
+    Source, is_announcement_title as is_announcement_title,
+    strip_legacy_hash as strip_legacy_hash, validate_notebook_url,
+)
+from .notebooklm_plan import (
+    DOCUMENT_TYPES as DOCUMENT_TYPES,
+    MAX_FILE_BYTES as MAX_FILE_BYTES,
+    MEDIA_TYPES as MEDIA_TYPES,
+    build_import_plan as build_import_plan,
+)
 from .spinner import spinner
-from .storage import hide_file, sanitize_component, sha256_file
-
-DOCUMENT_TYPES = {".pdf", ".txt", ".md", ".docx", ".pptx", ".csv", ".epub"}
-MEDIA_TYPES = {".mp3", ".wav", ".m4a", ".mp4", ".aac", ".ogg", ".opus"}
-MAX_FILE_BYTES = 200_000_000
-STATE_NAME = ".notebooklm-import.json"
+from .storage import sha256_file
 
 
-class NotebookLMError(RuntimeError):
-    pass
+def _superseded_announcements(record: dict, source: Source) -> dict[str, str]:
+    if source.relative_path not in ANNOUNCEMENT_PATHS:
+        return {}
+    return {
+        digest: entry["source_id"] for digest, entry in record.items()
+        if entry.get("announcement_path") == source.relative_path and digest != source.digest
+        and entry.get("status") == "complete" and entry.get("source_id")
+    }
 
 
-@dataclass(frozen=True)
-class Source:
-    path: Path
-    relative_path: str
-    digest: str
-    title: str
-    content_digest: str | None = None
-
-
-@dataclass
-class ImportPlan:
-    root: Path
-    sources: list[Source] = field(default_factory=list)
-    skipped: list[tuple[str, str]] = field(default_factory=list)
-    _video_parts: Path | None = field(default=None, repr=False)
-
-    def print_skipped(self, *, show_details: bool = False) -> None:
-        if not self.skipped:
-            return
-        print(t(f"略過的檔案（共 {len(self.skipped)} 個）", f"Skipped files ({len(self.skipped)} total)"))
-        if not show_details:
-            print(t("  加上 --show-skipped 可查看清單。", "  Use --show-skipped to see the list."))
-            return
-        by_reason: dict[str, list[str]] = {}
-        for relative, reason in self.skipped:
-            by_reason.setdefault(reason, []).append(relative)
-        for reason, paths in by_reason.items():
-            print(t(f"  {reason}（{len(paths)} 個）", f"  {reason} ({len(paths)})"))
-            for relative in paths:
-                print(f"    - {relative}")
-
-
-@dataclass
-class ImportResult:
-    uploaded: int = 0
-    unchanged: int = 0
-    notebook_url: str = ""
-
-
-class NotebookAdapter(Protocol):
-    def open_notebook(self, url: str | None, title: str) -> str: ...
-    def ready_titles(self) -> set[str]: ...
-    def source_count(self) -> int: ...
-    def upload(self, path: Path, title: str) -> None: ...
-
-
-def validate_notebook_url(value: str) -> str:
-    try:
-        parsed = urlsplit(value.strip())
-        port = parsed.port
-    except ValueError as exc:
-        raise NotebookLMError(t("NotebookLM 網址格式不正確。", "Malformed NotebookLM URL.")) from exc
-    if (parsed.scheme != "https" or parsed.hostname not in
-            {"notebooklm.google.com", "notebook.google.com"}
-            or parsed.username or parsed.password or port
-            or not re.fullmatch(r"/notebook/[A-Za-z0-9_-]+/?", parsed.path)):
-        raise NotebookLMError(t("請提供 NotebookLM 筆記本的 https 網址（/notebook/…）。",
-                                "Give the https URL of a NotebookLM notebook (/notebook/…)."))
-    # Strip tracking/account query strings; never persist authentication URLs.
-    return f"https://{parsed.hostname}{parsed.path.rstrip('/')}"
-
-
-def strip_legacy_hash(title: str) -> str:
-    """Strip legacy 8-64 hex char hash suffix like ' [11b37d6cafc0]' before the file extension."""
-    return re.sub(r" \[[0-9a-fA-F]{8,64}\](?=\.[^.]+$|$)", "", title)
-
-
-def is_announcement_title(title: str) -> bool:
-    """Match only announcement summaries, including names used by older imports."""
-    clean = strip_legacy_hash(title)
-    return bool(re.fullmatch(
-        r"(?:announcements|announcements - announcements)(?: \(\d+\))?(?:\.md)?", clean))
-
-
-def _split_video(path: Path, output: Path, size: int) -> list[Path]:
-    duration = float(subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
-        check=True, capture_output=True, text=True,
-    ).stdout)
-    if not math.isfinite(duration) or duration <= 0:
-        raise ValueError("Invalid video duration")
-
-    initial_seconds = duration / math.ceil(size / MAX_FILE_BYTES)
-    for stream_copy in (True, False):
-        seconds = initial_seconds
-        for _ in range(6):
-            interval = f"{seconds:.6f}"
-            codecs = ["-c", "copy"] if stream_copy else [
-                "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
-                "-force_key_frames", f"expr:gte(t,n_forced*{interval})",
-            ]
-            try:
-                subprocess.run(
-                    ["ffmpeg", "-nostdin", "-v", "error", "-xerror", "-i", str(path),
-                     "-map", "0:V:0", "-map", "0:a:0?", *codecs,
-                     "-f", "segment", "-segment_time", interval, "-reset_timestamps", "1",
-                     "-segment_start_number", "1", "part %06d.mp4"],
-                    cwd=output, check=True, capture_output=True,
-                )
-            except subprocess.CalledProcessError:
-                if not stream_copy:
-                    raise
-                for part in output.glob("part *.mp4"):
-                    part.unlink()
-                break
-            parts = sorted(output.glob("part *.mp4"))
-            if len(parts) >= 2 and all(0 < part.stat().st_size <= MAX_FILE_BYTES for part in parts):
-                return parts
-            for part in parts:
-                part.unlink()
-            seconds /= 2
-    raise ValueError("Could not produce video parts within the upload limit")
-
-
-def build_import_plan(course_dir: Path, *, include_media: bool = True) -> ImportPlan:
-    root = course_dir.expanduser().resolve()
-    if not root.is_dir():
-        raise NotebookLMError(t("教材資料夾不存在；請指定一門課的資料夾。",
-                                "The materials folder doesn't exist; point at one course's folder."))
-    print(t(f"NotebookLM：正在掃描並準備教材（{root.name}）…",
-            f"NotebookLM: scanning and preparing materials ({root.name})…"), flush=True)
-    plan = ImportPlan(root)
-    allowed = DOCUMENT_TYPES | (MEDIA_TYPES if include_media else set())
-    seen: set[str] = set()
-    used_titles: set[str] = set()
-    def fail_scan(exc):
-        raise NotebookLMError(t("無法讀取教材資料夾，請檢查檔案存取權。",
-                                "Can't read the materials folder; check file permissions.")) from exc
-
-    for directory, dirs, files in os.walk(root, followlinks=False, onerror=fail_scan):
-        dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d != "metadata"
-                         and not (Path(directory) / d).is_symlink()
-                         and not (getattr((Path(directory) / d).stat(), "st_file_attributes", 0) & 0x400)
-                         and (Path(directory) / d).resolve().is_relative_to(root))
-        for name in sorted(files):
-            path = Path(directory) / name
-            relative = path.relative_to(root).as_posix()
-            if name.startswith(".") or relative == "course_overview.md":
-                continue
-            if path.is_symlink() or not path.resolve().is_relative_to(root):
-                plan.skipped.append((relative, t("連結檔案", "link")))
-                continue
-            if path.suffix.lower() not in allowed:
-                reason = (t("已用 --notebooklm-no-media 略過影音檔", "media skipped by --notebooklm-no-media")
-                          if path.suffix.lower() in MEDIA_TYPES
-                          else t("NotebookLM 不支援的格式", "format NotebookLM doesn't support"))
-                plan.skipped.append((relative, reason))
-                continue
-            size = path.stat().st_size
-            split_video = size > MAX_FILE_BYTES and path.suffix.lower() == ".mp4"
-            if not size or (size > MAX_FILE_BYTES and not split_video):
-                reason = t("空檔案", "empty file") if not size else t("超過 200 MB", "over 200 MB")
-                plan.skipped.append((relative, reason))
-                continue
-            digest = sha256_file(path)
-            if digest in seen:
-                plan.skipped.append((relative, t("內容相同", "duplicate content")))
-                continue
-            parts = Path(relative).with_suffix("").parts
-            if len(parts) >= 2 and parts[-1].casefold() == parts[-2].casefold():
-                parts = parts[:-1]
-            label = sanitize_component(" - ".join(parts), max_length=90)
-            if relative in ("announcements/announcements.md", "announcements.md") or label == "announcements":
-                base_title = "announcements"
-                suffix = ""
-            else:
-                base_title = f"{label}{path.suffix.lower()}"
-                suffix = path.suffix.lower()
-            uploads = [Source(path, relative, digest, base_title)]
-            if split_video:
-                try:
-                    if plan._video_parts is None:
-                        plan._video_parts = Path(tempfile.mkdtemp(prefix="ntucool-video-parts-"))
-                        weakref.finalize(plan, shutil.rmtree, plan._video_parts, ignore_errors=True)
-                    output = Path(tempfile.mkdtemp(dir=plan._video_parts))
-                    with spinner(t(f"  正在分割 {relative}（{size / 1_000_000:.1f} MB）",
-                                   f"  Splitting {relative} ({size / 1_000_000:.1f} MB)")):
-                        video_parts = _split_video(path, output, size)
-                    if sha256_file(path) != digest:
-                        raise ValueError("Video changed during splitting")
-                    uploads = []
-                    for index, part in enumerate(video_parts, 1):
-                        content_digest = sha256_file(part)
-                        uploads.append(Source(
-                            part, f"{relative} (part {index})", f"{digest}:{index}:{content_digest}",
-                            f"{label} - part {index}.mp4", content_digest,
-                        ))
-                except FileNotFoundError:
-                    plan.skipped.append((relative, t("影片分割需要 ffmpeg 和 ffprobe，請確認檔案及工具可用",
-                                                     "Video splitting requires ffmpeg and ffprobe; check the file and tools")))
-                    continue
-                except (OSError, ValueError, subprocess.CalledProcessError):
-                    plan.skipped.append((relative, t("影片分割失敗，無法產生符合 200 MB 上限的分段",
-                                                     "Video splitting failed to produce parts within 200 MB")))
-                    continue
-            seen.add(digest)
-            for source in uploads:
-                title = source.title
-                title_stem = Path(title).stem if suffix else title
-                counter = 2
-                while title in used_titles:
-                    title = f"{title_stem} ({counter}){suffix}"
-                    counter += 1
-                used_titles.add(title)
-                plan.sources.append(replace(source, title=title))
-    return plan
-
-
-def _read_state(path: Path) -> dict:
-    if not path.exists():
-        return {"version": 1, "notebooks": {}}
-    try:
-        state = json.loads(path.read_text(encoding="utf-8"))
-        if state.get("version") != 1 or not isinstance(state.get("notebooks"), dict):
-            raise ValueError
-        for url, record in state["notebooks"].items():
-            validate_notebook_url(url)
-            if not isinstance(record.get("sources"), dict):
-                raise ValueError
-            for entry in record["sources"].values():
-                if entry.get("status") not in {"pending", "complete"} or not isinstance(entry.get("title"), str):
-                    raise ValueError
-        if state.get("default_url"):
-            validate_notebook_url(state["default_url"])
-        return state
-    except (ValueError, TypeError, AttributeError) as exc:
-        raise NotebookLMError(t("匯入紀錄格式損壞；請先檢查 .notebooklm-import.json，避免重複上傳。",
-                                "The import record is corrupt; check .notebooklm-import.json first to avoid duplicate uploads.")) from exc
-
-
-def _save_state(path: Path, state: dict) -> None:
-    fd, tmp = tempfile.mkstemp(prefix=".notebooklm-state-", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            json.dump(state, stream, ensure_ascii=False, indent=2)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(tmp, path)
-    finally:
-        Path(tmp).unlink(missing_ok=True)
-    hide_file(path)
-
-
-@contextmanager
-def _import_lock(root: Path):
-    """Exclusive local lock. A crash leaves a visible, fail-closed lock."""
-    path = root / ".notebooklm-import.lock"
-    try:
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except FileExistsError as exc:
-        raise NotebookLMError(t("此課程已有匯入工作或遺留鎖；確認沒有匯入程式後，才移除 .notebooklm-import.lock。",
-                                "Another import is running for this course, or a stale lock was left; only remove "
-                                ".notebooklm-import.lock once you're sure no import is running.")) from exc
-    try:
-        os.close(fd)
-        yield
-    finally:
-        path.unlink(missing_ok=True)
+def reconcile_legacy_sources(plan, record, ready, adapter):
+    """Bind completed legacy entries only to an unclaimed, byte-identical original."""
+    by_title = {}
+    for source_id, title in ready.items():
+        by_title.setdefault(title, []).append(source_id)
+    claimed = {entry.get("source_id") for entry in record.values()}
+    repaired = 0
+    for source in plan.sources:
+        entry = record.get(source.digest, {})
+        if entry.get("status") != "complete" or entry.get("source_id"):
+            continue
+        candidates = by_title.get(entry.get("title"), [])
+        if len(candidates) != 1 or candidates[0] in claimed:
+            continue
+        source_id = candidates[0]
+        if adapter.matches_original(source_id, source):
+            entry["source_id"] = source_id
+            claimed.add(source_id)
+            repaired += 1
+    return repaired
 
 
 def import_plan(plan: ImportPlan, adapter: NotebookAdapter, *, notebook_url: str | None = None,
@@ -302,70 +63,78 @@ def import_plan(plan: ImportPlan, adapter: NotebookAdapter, *, notebook_url: str
         return ImportResult()
     if notebook_url:
         notebook_url = validate_notebook_url(notebook_url)
-    with _import_lock(plan.root):
+    with import_lock(plan.root):
         path = plan.root / STATE_NAME
-        state = _read_state(path)
+        state = read_state(path)
         target = notebook_url or state.get("default_url")
         url = validate_notebook_url(adapter.open_notebook(target, plan.root.name))
         state["default_url"] = url
         record = state["notebooks"].setdefault(url, {"sources": {}})["sources"]
-        _save_state(path, state)  # Save the notebook before starting any upload.
-        ready = adapter.ready_titles()
+        save_state(path, state)  # Save the notebook before starting any upload.
+        ready = adapter.ready_sources()
+        repaired = reconcile_legacy_sources(plan, record, ready, adapter)
+        if repaired:
+            save_state(path, state)
+            print(t(f"已核對原檔並補回 {repaired} 個來源 ID。", f"Verified originals and restored {repaired} source IDs."))
+        used_titles = set(ready.values())
         result = ImportResult(notebook_url=url)
         pending: list[Source] = []
-        replacements: set[str] = set()
+        confirmed_announcements: list[Source] = []
+
+        def remove_superseded(source: Source) -> None:
+            obsolete = _superseded_announcements(record, source)
+            if obsolete:
+                kept_id = record[source.digest]["source_id"]
+                adapter.delete_sources(set(obsolete.values()) - {kept_id}, keep_source_id=kept_id)
+                for digest in obsolete:
+                    del record[digest]
+                save_state(path, state)
+
         for source in plan.sources:
-            previous = record.get(source.digest)
-            replace_announcement = (
-                source.relative_path in ("announcements/announcements.md", "announcements.md")
-                and hasattr(adapter, "remove_announcements"))
-            if (replace_announcement and previous and previous.get("status") == "complete"
-                    and adapter.announcement_source_count() > 1):
-                pending.append(source)
-                replacements.add(source.digest)
-            elif previous and (source.title in ready or previous.get("title") in ready):
-                title = source.title if source.title in ready else previous["title"]
-                record[source.digest] = {"title": title, "status": "complete"}
+            previous = record.get(source.digest, {})
+            source_id = previous.get("source_id")
+            if source_id in ready and (previous["status"] == "complete" or ready[source_id] == previous["title"]):
+                previous.update(title=ready[source_id], status="complete")
+                if previous.get("announcement_path") == source.relative_path:
+                    confirmed_announcements.append(source)
                 result.unchanged += 1
-            elif previous and previous.get("status") == "pending":
+                continue
+            if previous.get("status") == "pending":
                 raise NotebookLMError(t(
                     f"先前上傳結果不明：{source.relative_path}。請在筆記本確認來源是否處理完成；"
                     "不會自動重送。若已確定不存在，才刪除紀錄中對應的 pending 項目後重試。",
                     f"An earlier upload of {source.relative_path} has an unknown result. Check the notebook; "
                     "it won't be re-sent automatically. Only if it's definitely missing, delete its pending "
                     "entry from the record and retry."))
-            elif replace_announcement:
-                pending.append(source)
-                replacements.add(source.digest)
-            elif source.title in ready:
-                old_digests = [d for d, entry in record.items() if entry.get("title") == source.title and d != source.digest]
-                if old_digests:
-                    stem = Path(source.title).stem
-                    suffix = Path(source.title).suffix
-                    counter = 2
-                    new_title = f"{stem} ({counter}){suffix}"
-                    while new_title in ready:
-                        counter += 1
-                        new_title = f"{stem} ({counter}){suffix}"
-                    pending.append(replace(source, title=new_title))
-                else:
-                    record[source.digest] = {"title": source.title, "status": "complete"}
-                    result.unchanged += 1
-            else:
-                pending.append(source)
-        _save_state(path, state)
-        removed_count = adapter.announcement_source_count() if replacements else 0
+            if not source_id and previous.get("status") == "complete" and previous["title"] in ready.values():
+                result.unverified += 1
+                continue
+            title = source.title
+            stem, suffix = Path(title).stem, Path(title).suffix
+            counter = 2
+            while title in used_titles:
+                title = f"{stem} ({counter}){suffix}"
+                counter += 1
+            used_titles.add(title)
+            pending.append(replace(source, title=title))
+        save_state(path, state)
+        for source in confirmed_announcements:
+            remove_superseded(source)
         current_count = adapter.source_count()
-        projected_count = current_count - removed_count + len(pending)
-        print(t(f"NotebookLM 來源：目前 {current_count}/{max_sources}，匯入後預計 {projected_count}/{max_sources}。",
-                f"NotebookLM sources: {current_count}/{max_sources} now, {projected_count}/{max_sources} after import."))
-        if projected_count > max_sources:
-            raise NotebookLMError(t("來源數將超過設定上限。請改用另一個筆記本／較小的教材資料夾，"
-                                    "或依帳號方案提高 --notebooklm-max-sources。",
-                                    "This would exceed the source limit. Use another notebook or a smaller "
-                                    "folder, or raise --notebooklm-max-sources to match your plan."))
+        print(t(f"NotebookLM 來源：目前 {current_count}/{max_sources}，待上傳 {len(pending)}。",
+                f"NotebookLM sources: {current_count}/{max_sources} now, {len(pending)} pending upload."))
+        pending.sort(key=lambda source: not _superseded_announcements(record, source))
+        remaining_ready_ids = set(ready)
+        projected_count = current_count
         for source in pending:
-            # Stage an immutable snapshot with a deterministic, collision-resistant name.
+            if projected_count >= max_sources:
+                raise NotebookLMError(t("來源數將超過設定上限。須有足夠空位先上傳新版，才能移除舊公告。",
+                                        "This would exceed the source limit. Free space to upload new sources before old announcements are removed."))
+            retiring = remaining_ready_ids.intersection(_superseded_announcements(record, source).values())
+            projected_count += 1 - len(retiring)
+            remaining_ready_ids.difference_update(retiring)
+        for source in pending:
+            # Verify the staged copy against the planned digest before recording the upload.
             with tempfile.TemporaryDirectory(prefix=".notebooklm-upload-", dir=plan.root) as tmp:
                 staged_name = source.title if Path(source.title).suffix else f"{source.title}{source.path.suffix}"
                 staged = Path(tmp) / staged_name
@@ -373,26 +142,29 @@ def import_plan(plan: ImportPlan, adapter: NotebookAdapter, *, notebook_url: str
                 if sha256_file(staged) != (source.content_digest or source.digest):
                     raise NotebookLMError(t(f"檔案已變動，請重新執行：{source.relative_path}",
                                             f"File changed; run again: {source.relative_path}"))
-                if source.digest in replacements:
-                    adapter.remove_announcements()
-                    # Remove obsolete hashes so reverting content cannot adopt an old version.
-                    for digest in list(record):
-                        if is_announcement_title(record[digest]["title"]):
-                            del record[digest]
-                    _save_state(path, state)
-                record[source.digest] = {"title": source.title, "status": "pending"}
-                _save_state(path, state)
+                entry = {"title": source.title, "status": "pending"}
+                if source.relative_path in ANNOUNCEMENT_PATHS:
+                    entry["announcement_path"] = source.relative_path
+                record[source.digest] = entry
+                save_state(path, state)
+
+                def remember_source_id(source_id: str) -> None:
+                    entry["source_id"] = source_id
+                    save_state(path, state)
+
                 try:
                     with spinner(t(f"  上傳中 {source.relative_path}", f"  Uploading {source.relative_path}")):
-                        adapter.upload(staged, source.title)
+                        adapter.upload(staged, source.title, on_created=remember_source_id)
                 except Exception as exc:
                     # Do not include transport exception text: it may contain session URLs.
                     raise NotebookLMError(t(f"上傳尚未確認完成：{source.relative_path}。"
                                             "已保留 pending 紀錄，請檢查 NotebookLM 後再執行。",
                                             f"Upload not confirmed: {source.relative_path}. The pending "
                                             "record was kept; check NotebookLM, then run again.")) from exc
-                record[source.digest]["status"] = "complete"
-                _save_state(path, state)
+                entry["status"] = "complete"
+                save_state(path, state)
+                if "announcement_path" in entry:
+                    remove_superseded(source)
                 result.uploaded += 1
                 print(f"  ✓ {source.relative_path}")
         return result

@@ -6,20 +6,27 @@ notebooklm-py's own `notebooklm login`; this module never extracts browser cooki
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.util
 import logging
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from .notebooklm import (
-    ImportPlan, ImportResult, NotebookLMError, build_import_plan, import_plan, validate_notebook_url,
-    STATE_NAME, _read_state, is_announcement_title,
+from .notebooklm import import_plan
+from .notebooklm_journal import STATE_NAME, read_state
+from .notebooklm_models import (
+    ImportPlan, ImportResult, NotebookLMError, Source, is_announcement_title, strip_legacy_hash,
+    validate_notebook_url,
 )
+from .notebooklm_plan import build_import_plan
 from . import console
 from .i18n import t
+from .session_paths import secrets_dir
 from .spreadsheet_convert import convert_spreadsheets
 
 
@@ -37,8 +44,7 @@ def install_hint() -> str:
 
 def _api_home() -> Path:
     """Default API login home under the shared secrets location."""
-    from .cli import _secrets_dir
-    return _secrets_dir().resolve() / "notebooklm-api"
+    return secrets_dir().resolve() / "notebooklm-api"
 
 
 def trigger_interactive_login(storage_path: Path | None = None) -> bool:
@@ -49,8 +55,8 @@ def trigger_interactive_login(storage_path: Path | None = None) -> bool:
             "Finish the Google login in that window; it closes by itself and the import continues."))
 
     cmd = [sys.executable, "-m", "notebooklm", "login"]
-    # Google blocks sign-in on Playwright's own Chromium, so use the real Chrome
-    # when we know it's there (macOS: only if the app is installed).
+    # Prefer branded Chrome for Google login on Windows and on Macs with the
+    # Chrome app installed. Windows can retry with Edge if the command fails.
     if os.name == "nt" or (sys.platform == "darwin" and Path("/Applications/Google Chrome.app").exists()):
         cmd.extend(["--browser", "chrome"])
     cmd.extend(["--browser-timeout", "300"])
@@ -68,10 +74,7 @@ def trigger_interactive_login(storage_path: Path | None = None) -> bool:
             if storage_path:
                 fallback_cmd.extend(["--storage", str(storage_path)])
             res = subprocess.run(fallback_cmd, env=env)
-        if res.returncode == 0:
-            print(t("NotebookLM：Google 登入完成；繼續執行匯入...", "NotebookLM: Google login complete; continuing the import..."))
-            return True
-        return False
+        return res.returncode == 0
     except Exception:
         return False
 
@@ -92,9 +95,6 @@ def resolve_api_storage(storage_path: Path | None = None) -> Path | None:
         "NOTEBOOKLM_HOME", "NOTEBOOKLM_PROFILE", "NOTEBOOKLM_AUTH_JSON",
     )):
         return None
-    candidate = _api_home() / "profiles" / "default" / "storage_state.json"
-    if candidate.is_file():
-        return candidate
     config = Path.home() / ".ntu-cool-gcm" / "notebooklm-storage.json"
     try:
         saved = json.loads(config.read_text(encoding="utf-8"))["storage_path"]
@@ -104,6 +104,9 @@ def resolve_api_storage(storage_path: Path | None = None) -> Path | None:
                 return candidate
     except (OSError, ValueError, KeyError, TypeError):
         pass
+    candidate = _api_home() / "profiles" / "default" / "storage_state.json"
+    if candidate.is_file():
+        return candidate
     return None  # Let the SDK use its normal saved profile.
 
 
@@ -122,6 +125,31 @@ def api_client_context(storage_path: Path | None = None):
         path=str(storage_path) if storage_path else None, config=config)
 
 
+def _workbook_export(source: Source) -> bytes | None:
+    """Reproduce NotebookLM's Markdown export of our generated workbook tables."""
+    raw = source.path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != source.digest:
+        return None
+    try:
+        lines = raw.decode("utf-8").splitlines()
+    except UnicodeDecodeError:
+        return None
+    if len(lines) < 4 or lines[:2] != ["# " + source.path.stem, ""] or not lines[2].startswith("## "):
+        return None
+    rendered = ["##" + lines[0]]
+    for line in lines[2:]:
+        if line.startswith("## "):
+            line = "##" + line
+        elif re.fullmatch(r"\|(?: --- \|)+", line):
+            line = line.replace("---", "------")
+        elif line.startswith("|") and line.endswith("|"):
+            line = re.sub(r"\\([*_])", r"\1", line)
+        elif line:
+            return None
+        rendered.append(line)
+    return ("\n".join(rendered) + "\n\n").encode("utf-8")
+
+
 class NotebookLMAPIAdapter:
     def __init__(self, expected_titles: set[str], *, storage_path: Path | None = None,
                  interactive: bool = False, explicit_url: bool = False, context_factory=None):
@@ -132,6 +160,7 @@ class NotebookLMAPIAdapter:
         self.context_factory = context_factory or api_client_context
 
         self.notebook_id = None
+        self._original_urls = {}
         self.runner = None
         self.read_only = False
 
@@ -141,13 +170,22 @@ class NotebookLMAPIAdapter:
             return self
         # One interactive Google login, then a single clean retry.
         if (console.stdin_is_interactive() and self.context_factory is api_client_context
-                and trigger_interactive_login(self.storage_path) and self._connect()):
-            return self
+                and trigger_interactive_login(resolve_api_storage(self.storage_path))):
+            print(t("NotebookLM：瀏覽器已關閉，正在驗證 API 登入…",
+                    "NotebookLM: browser closed; verifying API sign-in…"), flush=True)
+            if self._connect():
+                print(t("NotebookLM：API 登入已驗證；繼續執行匯入。",
+                        "NotebookLM: API sign-in verified; continuing the import."))
+                return self
+            raise NotebookLMError(t(
+                "瀏覽器結束登入流程，但 NotebookLM API 仍無法驗證登入。請重新登入後再試。",
+                "The browser finished its login flow, but NotebookLM could not verify API sign-in. Sign in again and retry.",
+            )) from None
         raise NotebookLMError(t("API 登入未就緒或已過期；請先執行 notebooklm login，再重新匯入。",
                                 "NotebookLM login missing or expired; run notebooklm login, then import again.")) from None
 
     def _connect(self) -> bool:
-        """Open the API client. False on any library failure (auth, network)."""
+        """Return False for SDK connection errors. Propagate cancellation and NotebookLMError."""
         self.runner = asyncio.Runner()
         # Library errors may contain authentication URLs; only our own messages escape.
         for name in ("notebooklm", "httpx", "httpcore"):
@@ -208,7 +246,6 @@ class NotebookLMAPIAdapter:
                 raise NotebookLMError(t("指定筆記本不在目前帳號的「我的筆記本」中；已停止，請確認登入帳號及網址。",
                                         "That notebook isn't among this account's own notebooks; stopped. Check the signed-in account and the URL."))
         elif self.interactive and owned:
-            from .notebooklm_flow import choose
             print(t("\n選擇 NotebookLM 匯入目標：", "\nPick the NotebookLM target:"))
             print(t(f"0) [新增] 建立新的課程筆記本（名稱：{title}）", f"0) [new] Create a course notebook (name: {title})"))
             default_choice = "0"
@@ -220,7 +257,7 @@ class NotebookLMAPIAdapter:
                 print(f"{i}) {notebook.title}{tag}")
             prompt = t(f"請選擇 [0-{len(owned)}，預設 {default_choice}]（q 取消）：",
                        f"Choose [0-{len(owned)}, default {default_choice}] (q to cancel): ")
-            answer = choose(prompt, {str(i) for i in range(len(owned) + 1)}, default_choice)
+            answer = console.choose(prompt, {str(i) for i in range(len(owned) + 1)}, default_choice)
             if answer == "q":
                 raise NotebookLMError(t("已取消匯入。", "Import cancelled."))
             if answer != "0":
@@ -252,11 +289,10 @@ class NotebookLMAPIAdapter:
     def _sources(self):
         return self.call(self.client.sources.list(self.notebook_id, strict=True))
 
-    def ready_titles(self) -> set[str]:
+    def ready_sources(self) -> dict[str, str]:
         from notebooklm.types import SourceStatus
         rows = self._sources()
         if not self.read_only and hasattr(self.client.sources, "rename"):
-            from .notebooklm import strip_legacy_hash
             renamed_any = False
             for s in rows:
                 if s.title and s.title not in self.expected_titles:
@@ -288,7 +324,42 @@ class NotebookLMAPIAdapter:
         if any(s.title in self.expected_titles and s.status != SourceStatus.READY for s in rows):
             raise NotebookLMError(t("教材處理狀態尚未確認完成；已停止，不會重送。",
                                     "Source processing isn't confirmed complete; stopped without re-sending."))
-        return {s.title for s in rows if s.title and s.status == SourceStatus.READY}
+        ready = {s.id: s.title for s in rows if s.id and s.title and s.status == SourceStatus.READY}
+        self._original_urls = {s.id: getattr(s, "download_url", None) for s in rows if s.id in ready}
+        return ready
+
+    def matches_original(self, source_id: str, source: Source) -> bool:
+        """Compare the original upload, when Google retains it, to the plan's SHA-256."""
+        url = self._original_urls.get(source_id)
+        if not url:
+            return False
+        parts = urlsplit(url)
+        if (parts.scheme, parts.netloc, parts.path) != ("https", "contribution.usercontent.google.com", "/download"):
+            return False
+        import httpx
+
+        expected_size = source.path.stat().st_size
+        signatures = {(expected_size, source.content_digest or source.digest)}
+        if source.path.name.lower().endswith((".xlsx.md", ".xls.md")):
+            exported = _workbook_export(source)
+            if exported is not None:
+                signatures.add((len(exported), hashlib.sha256(exported).hexdigest()))
+        max_size = max(length for length, _ in signatures)
+        digest = hashlib.sha256()
+        try:
+            with httpx.Client(cookies=self.client.auth.cookie_jar, follow_redirects=False) as http:
+                with http.stream("GET", url) as response:
+                    if response.status_code != 200:
+                        return False
+                    size = 0
+                    for chunk in response.iter_bytes(65536):
+                        size += len(chunk)
+                        if size > max_size:
+                            return False
+                        digest.update(chunk)
+        except httpx.HTTPError:
+            return False
+        return (size, digest.hexdigest()) in signatures
 
     def account_source_limit(self) -> int:
         try:
@@ -304,26 +375,31 @@ class NotebookLMAPIAdapter:
     def source_count(self) -> int:
         return len(self._sources())
 
-    def announcement_source_count(self) -> int:
-        return sum(is_announcement_title(s.title or "") for s in self._sources())
-
-    def remove_announcements(self) -> None:
+    def delete_sources(self, source_ids: set[str], *, keep_source_id: str) -> None:
         if self.read_only:
             raise NotebookLMError(t("唯讀核對不會刪除來源。", "A read-only check never deletes sources."))
-        for source in self._sources():
-            if is_announcement_title(source.title or ""):
+        if not source_ids:
+            return
+        from notebooklm.types import SourceStatus
+        rows = self._sources()
+        if not any(source.id == keep_source_id and source.status == SourceStatus.READY for source in rows):
+            raise NotebookLMError(t("新版公告尚未就緒，已保留舊公告。",
+                                    "The new announcement source is not ready; old sources were retained."))
+        for source in rows:
+            if source.id in source_ids and source.id != keep_source_id:
                 self.call(self.client.sources.delete(self.notebook_id, source.id))
-        if self.announcement_source_count():
-            raise NotebookLMError(t("舊公告尚未確認刪除；已停止上傳。",
-                                    "Old announcements are still present; upload stopped."))
+        if any(source.id in source_ids for source in self._sources()):
+            raise NotebookLMError(t("新版公告已就緒，但舊公告尚未確認刪除；可重新執行核對。",
+                                    "New announcements are ready, but removal of old sources wasn't confirmed. Run again to reconcile."))
 
-    def upload(self, path: Path, title: str) -> None:
+    def upload(self, path: Path, title: str, *, on_created) -> None:
         if self.read_only:
             raise NotebookLMError(t("唯讀核對不會上傳檔案。", "A read-only check never uploads files."))
         from notebooklm.types import SourceStatus
         source = self.call(self.client.sources.add_file(self.notebook_id, path, title=title))
         if not source.id:
             raise NotebookLMError(t("上傳未回傳來源 ID。", "The upload returned no source ID."))
+        on_created(source.id)
         self.call(self.client.sources.wait_until_ready(self.notebook_id, source.id, timeout=180))
         rows = self._sources()
         matches = [s for s in rows if s.id == source.id and s.title == title and s.status == SourceStatus.READY]
@@ -338,7 +414,13 @@ def run_api_import(course_dir: Path, *, notebook_url: str | None = None,
                    interactive: bool = False, verify_only: bool = False,
                    show_skipped: bool = False,
                    plan: ImportPlan | None = None) -> ImportResult:
-    """Import `course_dir`; pass `plan` when the caller already built (and hashed) it."""
+    """Import or inspect course sources, reusing a supplied plan when available.
+
+    Dry-run skips Excel conversion and returns before opening the API or writing
+    the journal. Building a plan still hashes files and can split large MP4s
+    into temporary parts. Verify-only can generate Excel sidecars during local
+    preparation and connects to NotebookLM to check the journal's source IDs.
+    """
     if max_sources is not None and max_sources < 1:
         raise NotebookLMError(t("來源上限必須大於零。", "The source limit must be greater than zero."))
     if notebook_url:
@@ -362,7 +444,7 @@ def run_api_import(course_dir: Path, *, notebook_url: str | None = None,
     state_file = plan.root / STATE_NAME
     if state_file.is_file():
         try:
-            stored = _read_state(state_file)
+            stored = read_state(state_file)
             for nb in stored.get("notebooks", {}).values():
                 for item in nb.get("sources", {}).values():
                     if item.get("title"):
@@ -375,11 +457,16 @@ def run_api_import(course_dir: Path, *, notebook_url: str | None = None,
                              interactive=interactive, explicit_url=bool(notebook_url)) as adapter:
         if verify_only:
             adapter.read_only = True
-            state = _read_state(plan.root / STATE_NAME)
+            state = read_state(plan.root / STATE_NAME)
             url = adapter.open_notebook(notebook_url or state.get("default_url"), plan.root.name)
-            ready = adapter.ready_titles()
+            ready = adapter.ready_sources()
             records = state["notebooks"].get(url, {}).get("sources", {})
-            missing = [s for s in plan.sources if s.title not in ready and records.get(s.digest, {}).get("title") not in ready]
+            missing = []
+            for source in plan.sources:
+                entry = records.get(source.digest, {})
+                remote_title = ready.get(entry.get("source_id"))
+                if remote_title is None or (entry.get("status") == "pending" and remote_title != entry.get("title")):
+                    missing.append(source)
             complete = sum(records.get(s.digest, {}).get("status") == "complete" for s in plan.sources)
             print(t(f"唯讀核對：遠端已就緒 {len(plan.sources) - len(missing)}，缺少 {len(missing)}；本機完成紀錄 {complete}。",
                     f"Read-only check: {len(plan.sources) - len(missing)} ready remotely, {len(missing)} missing; "
@@ -387,8 +474,8 @@ def run_api_import(course_dir: Path, *, notebook_url: str | None = None,
             print(t("未建立筆記本、未上傳、未修改匯入紀錄。",
                     "No notebook created, nothing uploaded, import record unchanged."))
             if missing:
-                raise NotebookLMError(t("遠端來源尚未全部就緒；唯讀核對已停止，未重送。",
-                                        "Not every remote source is ready; read-only check stopped, nothing re-sent."))
+                raise NotebookLMError(t("部分教材缺少可核對的來源 ID，或遠端來源尚未就緒；未重送。",
+                                        "Some materials lack a verifiable source ID or are not ready remotely; nothing re-sent."))
             result = ImportResult(unchanged=len(plan.sources), notebook_url=url)
         else:
             if max_sources is None:
@@ -396,5 +483,7 @@ def run_api_import(course_dir: Path, *, notebook_url: str | None = None,
             result = import_plan(plan, adapter, notebook_url=notebook_url, max_sources=max_sources)
     print(t(f"NotebookLM API：新增 {result.uploaded}，已存在 {result.unchanged}。",
             f"NotebookLM API: {result.uploaded} added, {result.unchanged} already there."))
+    if result.unverified:
+        print(t(f"無法核對的舊紀錄：{result.unverified}。", f"Unverified legacy sources: {result.unverified}."))
     print(t(f"筆記本：{result.notebook_url}", f"Notebook: {result.notebook_url}"))
     return result

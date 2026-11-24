@@ -97,6 +97,10 @@ def announcement_markdown(announcement: dict[str, Any]) -> str:
     return "\n".join(parts).strip()
 
 
+def announcements_markdown(announcements: list[dict[str, Any]]) -> str:
+    return "\n\n".join(announcement_markdown(item) for item in announcements)
+
+
 # Raw API data is bookkeeping (the .md is what people read), so it's a hidden dotfile.
 ANNOUNCEMENTS_JSON = ".announcements.json"
 LEGACY_ANNOUNCEMENTS_JSON = "announcements.json"
@@ -125,11 +129,9 @@ def write_announcements(
 
     json_path = target_dir / ANNOUNCEMENTS_JSON
     markdown_path = target_dir / "announcements.md"
+    atomic_write_text(markdown_path, announcements_markdown(announcements))
     atomic_write_text(json_path, json.dumps(announcements, ensure_ascii=False, indent=2))
     (target_dir / LEGACY_ANNOUNCEMENTS_JSON).unlink(missing_ok=True)
-    atomic_write_text(markdown_path,
-        "\n\n".join(announcement_markdown(item) for item in announcements),
-    )
     return json_path, markdown_path
 
 

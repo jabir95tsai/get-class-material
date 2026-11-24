@@ -7,6 +7,9 @@ from pathlib import Path
 
 from .console import python_cmd
 from .i18n import t
+from .http_io import origin
+from .session_client import DEFAULT_BASE_URL, SESSION_ORIGIN_HEADER
+from .session_paths import secrets_dir, storage_state_path
 from .storage import atomic_write_text
 
 # Smart App Control kills Playwright's unsigned Chromium with
@@ -16,6 +19,7 @@ _BLOCKED_BY_APP_CONTROL = "exitCode=3236495362"
 
 def launch_persistent_context(playwright, profile_dir: Path, **kwargs):
     """Launch Playwright's Chromium, falling back to installed Google Chrome when Windows blocks it."""
+    kwargs["chromium_sandbox"] = True
     try:
         return playwright.chromium.launch_persistent_context(user_data_dir=str(profile_dir), **kwargs)
     except Exception as exc:
@@ -35,9 +39,6 @@ def launch_persistent_context(playwright, profile_dir: Path, **kwargs):
 
 
 
-DEFAULT_BASE_URL = "https://cool.ntu.edu.tw"
-
-
 class BrowserSessionError(RuntimeError):
     pass
 
@@ -52,6 +53,10 @@ class BrowserSessionResult:
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    if args.remember_login or args.forget_login:
+        from .ntu_credentials import configure_credentials
+        return configure_credentials(args.forget_login)
 
     try:
         result = refresh_headers_file(
@@ -116,12 +121,15 @@ def refresh_headers_file(
             page.goto(target_url, wait_until="domcontentloaded", timeout=timeout_ms)
 
             if _looks_like_login(page.url):
-                if headless:
+                from .ntu_credentials import try_saved_login
+                submitted = base_url == DEFAULT_BASE_URL and try_saved_login(page)
+                if headless and not submitted:
                     return BrowserSessionResult(headers_path=headers_path, logged_in=False, current_url=page.url)
 
-                print("請在開啟的瀏覽器視窗完成 NTU COOL 登入。")
+                if not submitted:
+                    print("請在開啟的瀏覽器視窗完成 NTU COOL 登入。")
                 try:
-                    page.wait_for_url(lambda url: not _looks_like_login(url), timeout=timeout_ms)
+                    page.wait_for_url(lambda url: origin(url) == origin(base_url) and not _looks_like_login(url), timeout=timeout_ms)
                 except PlaywrightTimeoutError as exc:
                     raise BrowserSessionError("Timed out waiting for login to finish.") from exc
 
@@ -135,22 +143,23 @@ def refresh_headers_file(
             if not cookie_header:
                 raise BrowserSessionError("No NTU COOL cookies found in browser context.")
 
-            headers_path.write_text(
+            saved_origin = "://".join(origin(base_url))
+            atomic_write_text(headers_path,
                 "\n".join(
                     [
+                        f"{SESSION_ORIGIN_HEADER}: {saved_origin}",
                         "accept: application/json, text/plain, */*",
                         f"cookie: {cookie_header}",
-                        "referer: https://cool.ntu.edu.tw/",
+                        f"referer: {saved_origin}/",
                         "user-agent: ntu-cool-materials/0.1",
                     ]
                 )
                 + "\n",
-                encoding="utf-8",
             )
             # The full jar lets the cool-video stage resume this login in an
             # invisible browser (Canvas session cookies die with the window).
-            from .course_pipeline import _storage_state_path
-            atomic_write_text(_storage_state_path(headers_path), json.dumps({"cookies": context.cookies()}))
+            atomic_write_text(storage_state_path(headers_path),
+                              json.dumps({"origin": saved_origin, "cookies": context.cookies()}))
             return BrowserSessionResult(headers_path=headers_path, logged_in=True, current_url=page.url)
         finally:
             context.close()
@@ -168,7 +177,7 @@ def _cookie_header(cookies: list[dict[str, object]]) -> str:
 
 def _looks_like_login(url: str) -> bool:
     lowered = url.lower()
-    return "/login" in lowered or "oauth2" in lowered or "saml" in lowered
+    return lowered.startswith("https://adfs.ntu.edu.tw/adfs/ls/") or "/login" in lowered or "oauth2" in lowered or "saml" in lowered
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -176,11 +185,13 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="ntu-cool-session",
         description="Refresh a local NTU COOL browser session and export headers for API calls.",
     )
+    credentials = parser.add_mutually_exclusive_group()
+    credentials.add_argument("--remember-login", action="store_true", help="Save or update NTU credentials for this Windows user.")
+    credentials.add_argument("--forget-login", action="store_true", help="Remove saved NTU credentials.")
     parser.add_argument("--course-id", default=None, help="Canvas course id to open while refreshing session.")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="NTU COOL base URL.")
     # Same home-anchored location as the main CLI, so `pick` sees this login.
-    from .cli import _secrets_dir
-    secrets = _secrets_dir()
+    secrets = secrets_dir()
     parser.add_argument("--profile-dir", default=str(secrets / "ntu_cool_browser_profile"),
                         help="Persistent browser profile directory.")
     parser.add_argument("--headers-file", default=str(secrets / "ntu_cool_headers.txt"), help="Headers output path.")

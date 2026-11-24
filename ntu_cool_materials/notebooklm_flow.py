@@ -4,20 +4,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from . import console
+from .console import choose
 from .i18n import t
-from .notebooklm import NotebookLMError, build_import_plan
+from .notebooklm_models import NotebookLMError
+from .notebooklm_plan import build_import_plan
 from .spreadsheet_convert import convert_spreadsheets
-
-
-def choose(prompt: str, choices: set[str], default: str) -> str:
-    while True:
-        try:
-            value = input(prompt).strip().lower() or default
-        except (EOFError, KeyboardInterrupt):
-            return "q"
-        if value in choices or value == "q":
-            return value
-        print(t("請輸入列出的選項，或 q 取消。", "Enter one of the listed options, or q to cancel."))
 
 
 def guided_import(course_dir: Path, *, notebook_url: str | None = None,

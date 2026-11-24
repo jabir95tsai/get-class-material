@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "get-class-material"
-version = "1.0.6"
+version = "1.0.6+local.2"
 description = "One-command bulk downloader for NTU COOL (Canvas) course materials — PDFs, lecture videos, and Pages."
 readme = "README.md"
 license = "MIT"
@@ -40,7 +40,7 @@ Issues = "https://github.com/jabir95tsai/get_class_material/issues"
 [project.optional-dependencies]
 dev = ["build", "twine"]
 excel = ["markitdown[xlsx,xls]>=0.1.2"]
-notebooklm = ["notebooklm-py[browser]==0.8.3", "markitdown[xlsx,xls]>=0.1.2"]
+notebooklm = ["notebooklm-py[browser]==0.8.6", "markitdown[xlsx,xls]>=0.1.2"]
 
 [project.scripts]
 ntu-cool-materials = "ntu_cool_materials.cli:main"

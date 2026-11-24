@@ -15,9 +15,7 @@ on:
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
-    # The `pypi` environment is what PyPI's Trusted Publishing config keys
-    # the OIDC claim on. If the name here doesn't match the PyPI setting,
-    # the upload silently fails the OIDC handshake.
+    # Match the environment name registered for this workflow on PyPI.
     environment:
       name: pypi
       url: https://pypi.org/p/get-class-material
@@ -65,11 +63,8 @@ jobs:
       # action's default) — we fix the fragility by retrying, not by dropping
       # the provenance attestation.
       #
-      # `skip-existing: true` everywhere makes each attempt idempotent: if a
-      # prior attempt (or a re-run of the whole workflow) already uploaded a
-      # file, the next attempt skips it instead of erroring "file already
-      # exists". The "version matches tag" step above is what guards against
-      # accidentally shipping a stale version, so a silent skip here is safe.
+      # skip-existing lets a retry finish a partial upload when some distribution
+      # files already exist on PyPI. The tag check verifies the local package version.
       - name: Publish to PyPI (attempt 1)
         id: publish-1
         continue-on-error: true

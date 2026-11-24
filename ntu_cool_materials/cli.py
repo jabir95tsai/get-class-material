@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import sys
 import threading
 from pathlib import Path
 from typing import Any
 
-from .http_io import DownloadError
+from .http_io import DownloadError, origin
 from .canvas_client import CanvasAPIError, CanvasClient
 from .announcements import announcement_markdown, write_announcements
 from .browser_session import refresh_headers_file
@@ -18,17 +17,16 @@ from .course_pipeline import (
     download_course,
     open_browser_session,
 )
+from .core.selection import _course_label, _parse_multi_indices, _select_courses, _split_course_ids
 from .doctor import ensure_ready, run_doctor
 from .i18n import get_lang, set_lang, t
-from .session_client import AUTH_EXPIRED, CanvasSessionClient, read_headers_file
+from .session_client import AUTH_EXPIRED, DEFAULT_BASE_URL, CanvasSessionClient, read_headers_file
+from .session_paths import secrets_dir as _secrets_dir
 from .spinner import spinner
 from .storage import ManifestStore
 from .update_check import auto_update_dependencies, check_for_update, offer_self_update
 from .sync import SyncStats, sync_course_materials
 from . import console
-
-
-DEFAULT_BASE_URL = "https://cool.ntu.edu.tw"
 
 
 def _force_utf8_streams() -> None:
@@ -44,9 +42,8 @@ def _force_utf8_streams() -> None:
     can't render some glyph — at worst the user sees `?` instead of `✓`,
     which is far better than crashing the whole CLI mid-status-update.
 
-    Old `sys.stdout` objects (pre-3.7) lack `reconfigure`; we no-op for
-    safety. Python 3.11+ is our floor so this branch never fires in
-    practice — kept for defensive symmetry.
+    Captured streams and other replacements for stdout or stderr can lack
+    reconfigure even on supported Python versions.
     """
     for stream_name in ("stdout", "stderr"):
         stream = getattr(sys, stream_name, None)
@@ -80,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.notebooklm_url:
             if getattr(args, "no_notebooklm", False):
                 parser.error("--notebooklm-url cannot be combined with --no-notebooklm")
-            from .notebooklm import NotebookLMError, validate_notebook_url
+            from .notebooklm_models import NotebookLMError, validate_notebook_url
             try:
                 args.notebooklm_url = validate_notebook_url(args.notebooklm_url)
             except NotebookLMError as exc:
@@ -166,8 +163,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--version", "-V", action="version",
         version=f"%(prog)s {_version_string()}",
     )
-    # Resolve once so every subcommand's secret defaults share the same base
-    # (a writable home dir unless ./.secrets already exists). See _secrets_dir.
+    # Resolve once so all subcommands use the same default secrets directory.
     secrets = _secrets_dir()
     default_headers = str(secrets / "ntu_cool_headers.txt")
     default_profile = str(secrets / "ntu_cool_browser_profile")
@@ -250,7 +246,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     pick.add_argument("--out", default=None,
                       help="Output directory. Default: ~/Documents/ntu-cool-gcm_material "
-                           "(or ./ntu-cool-gcm_material if you already have one there).")
+                           "(uses an existing local materials folder only if the Documents materials folder is absent).")
     pick.add_argument("--headers-file", default=default_headers)
     pick.add_argument("--refresh-session", action="store_true",
                       help="Open the browser to refresh login before listing.")
@@ -281,7 +277,7 @@ def _build_parser() -> argparse.ArgumentParser:
     course.add_argument("--headless", action="store_true", help="Never open a visible browser window; fail instead of asking to log in when the saved login has expired.")
     course.add_argument("--out", default=None,
                         help="Output directory. Default: ~/Documents/ntu-cool-gcm_material "
-                             "(or ./ntu-cool-gcm_material if you already have one there).")
+                             "(uses an existing local materials folder only if the Documents materials folder is absent).")
     course.add_argument(
         "--headers-file",
         default=default_headers,
@@ -391,6 +387,7 @@ def _cmd_sync(client: CanvasClient, args: argparse.Namespace) -> int:
         print("No matching courses found.")
         return 0
 
+    # Even a sync preview opens the manifest to count changed files.
     output_dir = Path(args.out)
     store = ManifestStore(output_dir / ".ntu_cool_materials.sqlite3")
     try:
@@ -580,48 +577,14 @@ def _default_documents_root() -> Path:
 
 
 def _resolve_output_dir(arg_value: str | None) -> Path:
-    """Resolve where to put downloaded materials.
-
-    Precedence:
-      1. Explicit --out argument (user wins).
-      2. ./ntu-cool-gcm_material in the current directory IF it already
-         exists (legacy users from <0.2.6 who have stuff there already).
-      3. <Documents>/ntu-cool-gcm_material — Documents resolved via Windows'
-         own KnownFolders API so OneDrive redirects and zh-TW localization
-         go to the right place.
-    """
+    """Use --out when supplied. Otherwise reuse the local library only if the Documents target is absent."""
     if arg_value:
         return Path(arg_value).expanduser()
-    legacy = Path("ntu-cool-gcm_material")
-    if legacy.exists() and legacy.is_dir():
-        return legacy
-    return _default_documents_root() / "ntu-cool-gcm_material"
-
-
-def _secrets_dir() -> Path:
-    """Where to keep login cookies / browser profile / YouTube cookies.
-
-    Precedence:
-      1. ./.secrets in the current directory IF it already exists — keeps
-         existing users on their saved login, and keeps devs running from the
-         repo on the git-ignored ./.secrets. Note the default PowerShell start
-         dir is the user's home, so anyone who ran from there already has
-         ~/.secrets and stays on it.
-      2. ~/.ntu-cool-gcm/.secrets — a stable, always-writable home location.
-
-    Anchoring secrets to home (instead of the current dir) is what stops the
-    `WinError 5 存取被拒` crash when someone launches the tool from a folder
-    they can't write to — most commonly C:\\WINDOWS\\system32, the working dir
-    of an elevated "PowerShell (Admin)" window. The output dir already resolves
-    to <Documents>/… for the same reason; this brings secrets in line.
-    """
-    legacy = Path(".secrets")
-    try:
-        if legacy.is_dir():
-            return legacy
-    except OSError:
-        pass
-    return Path.home() / ".ntu-cool-gcm" / ".secrets"
+    documents = _default_documents_root() / "ntu-cool-gcm_material"
+    local = Path("ntu-cool-gcm_material")
+    if not documents.exists() and local.is_dir():
+        return local
+    return documents
 
 
 def _close_completed_login(browser: BrowserSession | None) -> None:
@@ -632,25 +595,17 @@ def _close_completed_login(browser: BrowserSession | None) -> None:
 
 
 def _cmd_pick(base_url: str, args: argparse.Namespace) -> int:
-    """Interactive course picker → download_course.
+    """Check dependencies, select courses interactively and download them.
 
-    First-run hook: silently checks Python/Playwright/yt-dlp/Chromium and
-    auto-installs whatever is missing so the user can run `ntu-cool-gcm`
-    immediately after `pip install ntu-cool-material` without other steps.
-
-    Note: there is intentionally no upfront "set up YouTube cookies?" prompt.
-    Most course videos are public/unlisted and download without any login, so
-    the common path is zero prompts. Only if some videos actually fail does
-    download_course ask (once) whether to retry using the YouTube login from
-    the user's browser — see course_pipeline.maybe_retry_youtube_with_login.
+    Setup attempts to install missing required components that have an installer.
+    The picker saves any fresh SSO login and closes its window after listing
+    courses. Downloads use the saved headers and can recover the session.
     """
     set_lang(args.lang)
     headers_path = Path(args.headers_file)
     youtube_cookies = Path(args.youtube_cookies)
 
-    # Fire the "newer version on PyPI?" check in the background so it overlaps
-    # the (several-second) ensure_ready env check below — zero added latency.
-    # It hits the network at most once a day (cached), and never raises.
+    # Overlap the package update lookup with setup, then briefly wait for the result.
     _update_result: dict[str, str | None] = {}
 
     def _bg_update_check() -> None:
@@ -683,12 +638,20 @@ def _cmd_pick(base_url: str, args: argparse.Namespace) -> int:
             f"Run: {console.pip_install_hint('get-class-material')}\n",
         ))
 
+    if origin(base_url) == origin(DEFAULT_BASE_URL):
+        from .ntu_credentials import offer_credentials
+        offer_credentials()
+
     browser: BrowserSession | None = None
 
     def _open_login_browser() -> bool:
         """Open Playwright, complete SSO, dump cookies. Updates the outer
         `browser` reference. Returns True on success."""
         nonlocal browser
+        if origin(base_url) != origin(DEFAULT_BASE_URL):
+            print(t("自訂 Canvas 網址請用 ntu-cool-session 重新登入。",
+                    "For a custom Canvas origin, refresh login with ntu-cool-session."))
+            return False
         try:
             new_browser = open_browser_session(
                 profile_dir=Path(args.profile_dir), headless=False, course_id=None,
@@ -733,17 +696,14 @@ def _cmd_pick(base_url: str, args: argparse.Namespace) -> int:
         just_refreshed = True
 
     try:
-        client = CanvasSessionClient(base_url=base_url, headers=read_headers_file(headers_path))
+        client = CanvasSessionClient(base_url=base_url, headers=read_headers_file(headers_path, base_url=base_url))
     except (OSError, ValueError) as exc:
         if browser is not None:
             browser.close()
         print(t(f"無法讀取登入憑證: {exc}", f"Could not read saved login: {exc}"))
         return 1
 
-    # Fast pre-flight: if we're reusing a saved login, check it's still valid
-    # in ~one round-trip instead of finding out at the end of a heavy, 30s-
-    # capped list_courses call. Only acts on a *definitive* expired signal —
-    # a slow/unknown network falls straight through to the normal path.
+    # A timeout leaves the login status unknown. Only the expired result opens SSO here.
     if not just_refreshed:
         with spinner(t("連線 NTU COOL 中…", "Connecting to NTU COOL…")):
             preflight = client.check_auth()
@@ -759,11 +719,10 @@ def _cmd_pick(base_url: str, args: argparse.Namespace) -> int:
                 browser.close()
             print(t("無法重新登入。", "Could not re-authenticate."))
             return 1
-        client = CanvasSessionClient(base_url=base_url, headers=read_headers_file(headers_path))
+        client = CanvasSessionClient(base_url=base_url, headers=read_headers_file(headers_path, base_url=base_url))
 
     def _list_courses_with_auto_refresh(enrollment_state: str) -> list[dict[str, Any]]:
-        """Call list_courses, and if we get HTTP 401 (session expired), open the
-        browser to re-login automatically and retry once."""
+        """Retry a 401 once after a successful login if no browser is already open."""
         nonlocal client
         loading = t("讀取課程清單中…", "Loading your courses…")
         try:
@@ -778,7 +737,7 @@ def _cmd_pick(base_url: str, args: argparse.Namespace) -> int:
             ))
             if not _open_login_browser():
                 raise
-            client = CanvasSessionClient(base_url=base_url, headers=read_headers_file(headers_path))
+            client = CanvasSessionClient(base_url=base_url, headers=read_headers_file(headers_path, base_url=base_url))
             with spinner(loading):
                 return client.list_courses(enrollment_state=enrollment_state)
 
@@ -799,12 +758,8 @@ def _cmd_pick(base_url: str, args: argparse.Namespace) -> int:
         ))
         return 0
 
-    # The visible browser is only needed to complete SSO and export the Canvas
-    # cookies. Normal course/file downloads use the saved headers, so close the
-    # NTU COOL window as soon as the course list proves that login succeeded.
-    # Its cookies are session-only and die with this window, but they were
-    # saved with the headers file; the cool-video step re-injects them into an
-    # invisible browser, so the user isn't asked to log in again.
+    # The header file and saved cookies let later stages resume this session
+    # after the visible login window closes.
     if browser is not None:
         _close_completed_login(browser)
         browser = None
@@ -847,7 +802,7 @@ def _cmd_pick(base_url: str, args: argparse.Namespace) -> int:
         ))
         try:
             # A previous course may have refreshed the saved session internally.
-            client = CanvasSessionClient(base_url=base_url, headers=read_headers_file(headers_path))
+            client = CanvasSessionClient(base_url=base_url, headers=read_headers_file(headers_path, base_url=base_url))
             plan = download_course(
                 course_id=course_id,
                 output_dir=_resolve_output_dir(args.out),
@@ -874,9 +829,8 @@ def _cmd_pick(base_url: str, args: argparse.Namespace) -> int:
                 if getattr(args, "notebooklm", False):
                     _import_notebooklm(plan.course_dir)
                 elif _notebooklm_prompt_enabled():
-                    from .notebooklm_flow import choose
-                    if choose(t("\n要將這門課匯入 NotebookLM 嗎？[y/N]：",
-                                "\nImport this course into NotebookLM? [y/N]: "), {"y", "n"}, "n") == "y":
+                    if console.choose(t("\n要將這門課匯入 NotebookLM 嗎？[y/N]：",
+                                        "\nImport this course into NotebookLM? [y/N]: "), {"y", "n"}, "n") == "y":
                         _import_notebooklm(plan.course_dir)
             return successful
         except (RuntimeError, OSError, ValueError) as exc:
@@ -894,9 +848,6 @@ def _cmd_pick(base_url: str, args: argparse.Namespace) -> int:
         if not args.keep_terminal:
             _close_parent_terminal_on_quit()
         return 1 if notebooklm_failed or failed_courses else 0
-
-    def _course_label(c: dict[str, Any]) -> str:
-        return str(c.get("name") or c.get("course_code") or c.get("id"))
 
     def _print_course_list() -> None:
         print(t(
@@ -977,8 +928,7 @@ def _cmd_pick(base_url: str, args: argparse.Namespace) -> int:
             _import_notebooklm(course_dirs[str(course["id"])])
 
     class _UserQuit(Exception):
-        """Raised when the user types 'q' from any prompt — propagates to the
-        top-level handler which exits cleanly."""
+        """Leave the course picker when a selection menu receives a quit request."""
 
     def _pick_historical_course() -> list[dict[str, Any]] | None:
         """Two-step picker for past semesters: pick semester, then pick course(s).
@@ -1003,8 +953,7 @@ def _cmd_pick(base_url: str, args: argparse.Namespace) -> int:
             term = c.get("term") or {}
             term_name = str(term.get("name") or "(未指定學期)")
             groups.setdefault(term_name, []).append(c)
-        # Most recent first; Canvas term names like "114-2 (2026 Spring)" sort
-        # correctly under reverse-alpha.
+        # Term names are free-form. NTU's year-prefixed labels generally sort newest first.
         term_names = sorted(groups.keys(), reverse=True)
 
         while True:  # semester picker (re-entered if course-level user picks 'b')
@@ -1072,25 +1021,6 @@ def _cmd_pick(base_url: str, args: argparse.Namespace) -> int:
                     f"Invalid choice: {raw!r}. Enter 1-{len(term_courses)} (space-separated OK), a, b, or q.",
                 ))
                 continue
-
-    def _parse_multi_indices(raw: str, total: int) -> list[int] | None:
-        """Parse "1 3 5" / "1,3,5" / "1, 3, 5" into 0-based indices.
-        Returns None if any token isn't a valid 1..total integer."""
-        parts = [p for p in re.split(r"[\s,]+", raw) if p]
-        if not parts:
-            return None
-        out: list[int] = []
-        seen: set[int] = set()
-        for p in parts:
-            if not p.isdigit():
-                return None
-            i = int(p) - 1
-            if not (0 <= i < total):
-                return None
-            if i not in seen:
-                seen.add(i)
-                out.append(i)
-        return out
 
     def _ask_pick_number() -> list[dict[str, Any]] | None:
         """Show the course list and ask the user to pick. Returns:
@@ -1271,7 +1201,7 @@ def _cmd_notebooklm(course_dir: Path | None, args: argparse.Namespace, *, guided
         return 0
     except (RuntimeError, OSError, ValueError) as exc:
         # Only our own errors are safe to show; library errors may carry login URLs.
-        from .notebooklm import NotebookLMError
+        from .notebooklm_models import NotebookLMError
         detail = str(exc) if isinstance(exc, NotebookLMError) else t(
             "本機檔案或 NotebookLM 連線失敗，請確認路徑和登入狀態。",
             "A local file or the NotebookLM connection failed; check the path and your login.")
@@ -1321,7 +1251,7 @@ def _announcements_client(base_url: str, args: argparse.Namespace) -> CanvasClie
 
     if args.headers_file:
         try:
-            headers = read_headers_file(Path(args.headers_file))
+            headers = read_headers_file(Path(args.headers_file), base_url=base_url)
         except (OSError, ValueError) as exc:
             print(f"Could not read headers file: {exc}")
             return None
@@ -1353,7 +1283,7 @@ def _courses_client(base_url: str, args: argparse.Namespace) -> CanvasClient | C
 
     if args.headers_file:
         try:
-            headers = read_headers_file(Path(args.headers_file))
+            headers = read_headers_file(Path(args.headers_file), base_url=base_url)
         except (OSError, ValueError) as exc:
             print(f"Could not read headers file: {exc}")
             return None
@@ -1364,42 +1294,6 @@ def _courses_client(base_url: str, args: argparse.Namespace) -> CanvasClient | C
         print("Or pass --headers-file with logged-in browser request headers.")
         return None
     return CanvasClient(base_url=base_url, token=token)
-
-
-def _split_course_ids(values: list[str]) -> set[str]:
-    course_ids: set[str] = set()
-    for value in values:
-        for item in value.split(","):
-            item = item.strip()
-            if item:
-                course_ids.add(item)
-    return course_ids
-
-
-def _select_courses(
-    courses: list[dict[str, Any]],
-    *,
-    all_courses: bool,
-    course_ids: set[str],
-    name_contains: str | None,
-) -> list[dict[str, Any]]:
-    selected: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
-    name_filter = name_contains.casefold() if name_contains else None
-
-    for course in courses:
-        course_id = str(course.get("id") or "")
-        course_name = str(course.get("name") or course.get("course_code") or "")
-        matches_id = course_id in course_ids
-        matches_name = bool(name_filter and name_filter in course_name.casefold())
-        if all_courses or matches_id or matches_name:
-            selected.append(course)
-            seen_ids.add(course_id)
-
-    for course_id in sorted(course_ids - seen_ids):
-        selected.append({"id": course_id, "name": course_id})
-
-    return selected
 
 
 def _print_table(headers: tuple[str, ...], rows: list[tuple[str, ...]]) -> None:

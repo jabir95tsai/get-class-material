@@ -249,7 +249,8 @@ class OfferSelfUpdateTests(unittest.TestCase):
                                 ["-m", "ntu_cool_materials", "pick", "--out", "x"]])
 
     def test_carries_on_without_rerun(self) -> None:
-        for kwargs in [dict(answer=False), dict(editable=True), dict(pip_rc=1),
+        self.assertEqual(self._offer(editable=True)[0], 0)
+        for kwargs in [dict(answer=False), dict(editable=True, answer=False), dict(pip_rc=1),
                        dict(after="1.0.3")]:  # pip "succeeded" but stayed old: no rerun loop
             code, cmds = self._offer(**kwargs)
             self.assertIsNone(code, kwargs)

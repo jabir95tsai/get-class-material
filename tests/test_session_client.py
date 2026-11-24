@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import email.message
+import io
 import tempfile
 import unittest
 import urllib.error
 from pathlib import Path
 from unittest import mock
 
-from ntu_cool_materials import session_client
+from ntu_cool_materials import cli, session_client
 from ntu_cool_materials.session_client import (
     AUTH_EXPIRED,
     AUTH_OK,
@@ -50,7 +51,7 @@ class _FakeOpener:
     def __init__(self, result: object) -> None:
         self._result = result
 
-    def open(self, request: object, timeout: float | None = None) -> object:  # noqa: A003
+    def open(self, request: object, timeout: float | None = None) -> object:
         if isinstance(self._result, Exception):
             raise self._result
         return self._result
@@ -103,6 +104,30 @@ class CheckAuthTests(unittest.TestCase):
 
 
 class SessionClientTests(unittest.TestCase):
+    def test_saved_session_is_bound_to_canvas_origin(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "headers.txt"
+            path.write_text("cookie: synthetic\n", encoding="utf-8")
+            self.assertEqual(read_headers_file(path), {"cookie": "synthetic"})
+            with self.assertRaisesRegex(ValueError, "origin"):
+                read_headers_file(path, base_url="https://canvas.example")
+
+            path.write_text("canvas-session-origin: https://canvas.example\ncookie: synthetic\n",
+                            encoding="utf-8")
+            self.assertEqual(read_headers_file(path, base_url="https://canvas.example"),
+                             {"cookie": "synthetic"})
+            with self.assertRaisesRegex(ValueError, "origin"):
+                read_headers_file(path)
+
+    def test_courses_rejects_unbound_custom_origin_before_client_creation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "headers.txt"
+            path.write_text("cookie: synthetic\n", encoding="utf-8")
+            with mock.patch.object(cli, "CanvasSessionClient") as client, mock.patch("sys.stdout", io.StringIO()):
+                code = cli.main(["--base-url", "https://canvas.example", "courses", "--headers-file", str(path)])
+            self.assertNotEqual(code, 0)
+            client.assert_not_called()
+
     def test_read_headers_file_from_raw_devtools_headers(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "headers.txt"

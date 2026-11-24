@@ -76,8 +76,7 @@ def spinner(message: str, *, stream=None, interval: float = 0.1) -> Iterator[Non
         yield
         return
 
-    # Frame + space take 2 cells; leave 1 spare so the cursor never hits the
-    # last column (some consoles auto-wrap there).
+    # Leave room for the frame and a spare column to reduce terminal wrapping.
     message = _clip(message, max(10, shutil.get_terminal_size().columns - 3))
 
     stop = threading.Event()

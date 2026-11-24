@@ -1,14 +1,7 @@
-"""Best-effort 'is there a newer version on PyPI?' check.
+"""Check PyPI for package updates and offer or apply upgrades.
 
-Design rules (a startup nag must never get in the way):
-  - Never raises. Any network/parse/cache error → returns None (no nag).
-  - Hits the network at most once per `interval_sec` (default 24h); between
-    network checks it compares against the cached latest version, so the user
-    still gets reminded every run while they're behind without re-hitting PyPI.
-  - Short timeout so a slow/offline network can't stall startup.
-
-`check_for_update` is the entry point and is pure enough to unit-test by
-injecting `fetch` and `now`.
+Successful lookups are cached. A failed fetch can reuse an older cached
+version and leaves the lookup due on the next run.
 """
 from __future__ import annotations
 
@@ -69,8 +62,8 @@ def check_for_update(
 ) -> str | None:
     """Return the latest version string if PyPI has a newer one, else None.
 
-    Network is contacted at most once per `interval_sec`; results are cached in
-    `cache_path`. Never raises.
+    Reuse a successful lookup for interval_sec. If the next fetch fails,
+    compare against any cached version without extending its freshness.
     """
     if not current_version or current_version == _UNKNOWN_VERSION:
         return None  # running from an uninstalled source tree — don't nag
@@ -148,9 +141,9 @@ def resolve_yt_dlp(yt_dlp: str = "yt-dlp") -> str | None:
 def yt_dlp_command(yt_dlp: str = "yt-dlp") -> list[str]:
     """argv prefix that runs yt-dlp.
 
-    Prefers `python -m yt_dlp` over the pip-generated yt-dlp.exe launcher, which
-    Windows Application Control blocks as unsigned (WinError 4551). A custom
-    executable name/path is respected as-is."""
+    If the executable stem is yt-dlp and the Python module is installed, run
+    it with this interpreter. This avoids Windows policy blocks on the launcher.
+    Other executable names are passed through."""
     if Path(yt_dlp).stem.lower() == "yt-dlp" and importlib.util.find_spec("yt_dlp"):
         return [sys.executable, "-m", "yt_dlp"]
     return [yt_dlp]
@@ -210,7 +203,7 @@ def update_yt_dlp(yt_dlp: str = "yt-dlp") -> tuple[bool, str]:
                     f"update failed; run {hint} manually")
 
 
-def confirm_yt_dlp_update(prompt: str, *, input_fn=None) -> bool:
+def confirm_yt_dlp_update(prompt: str, *, input_fn=None, default_yes: bool = True) -> bool:
     """Ask before changing the user's Python environment; never in non-interactive runs."""
     if input_fn is None:
         if not console.stdin_is_interactive():
@@ -220,7 +213,7 @@ def confirm_yt_dlp_update(prompt: str, *, input_fn=None) -> bool:
         answer = input_fn(prompt).strip().lower()
     except (EOFError, KeyboardInterrupt):
         return False
-    return answer in {"", "y", "yes"}
+    return default_yes if not answer else answer in {"y", "yes"}
 
 
 def ensure_yt_dlp_updated(
@@ -230,7 +223,7 @@ def ensure_yt_dlp_updated(
     *,
     confirm=confirm_yt_dlp_update,
 ) -> bool | None:
-    """Offer to update yt-dlp when it is older than max_age_days.
+    """Offer an update once the yt-dlp release reaches max_age_days.
 
     Returns None when no update was needed (or the version is unknown), True
     after a successful update, and False when the user declined or it failed.
@@ -260,12 +253,11 @@ AUTO_UPDATE_PACKAGES = ("yt-dlp", "playwright")
 
 
 def auto_update_dependencies(secrets_dir: Path, *, fetch=None, run=subprocess.run) -> None:
-    """Upgrade yt-dlp / Playwright when PyPI has a newer release.
+    """Update installed yt-dlp and Playwright packages with newer PyPI versions.
 
-    YouTube breaks old yt-dlp within weeks, so staying current matters more
-    than asking. PyPI is checked at most once a day per package (same cache
-    rules as `check_for_update`). Must run before anything imports Playwright
-    in this process. Never raises; a failed upgrade just leaves the old one.
+    The picker calls this before its first Playwright check. Each package uses
+    its own lookup cache. Chromium installation follows the Playwright pip
+    upgrade, so a browser installation failure can leave the package upgraded.
     """
     import importlib.metadata
     from .i18n import t
@@ -297,7 +289,7 @@ def auto_update_dependencies(secrets_dir: Path, *, fetch=None, run=subprocess.ru
 
 
 def _is_editable_install(package: str = "get-class-material") -> bool:
-    """A dev's `pip install -e .` must not be replaced by the PyPI build."""
+    """Return whether distribution metadata identifies an editable installation."""
     import importlib.metadata
     try:
         raw = importlib.metadata.distribution(package).read_text("direct_url.json")
@@ -308,18 +300,21 @@ def _is_editable_install(package: str = "get-class-material") -> bool:
 
 def offer_self_update(latest: str, relaunch_argv: list[str], *, confirm=None, run=subprocess.run,
                       installed_version=None) -> int | None:
-    """Ask [Y/n] to upgrade get-class-material to `latest`, then rerun the same
-    command on the new code (modules already imported here are the old ones).
+    """Offer a PyPI upgrade and relaunch after verifying the installed version.
 
-    Returns the rerun's exit code, or None to carry on with the current
-    version (declined, non-interactive, editable install, or upgrade failed).
+    The interactive default is no for an editable install and yes otherwise.
+    Return the child exit code, or None if the update was declined or failed.
     """
     from .i18n import t
-    if _is_editable_install():
-        return None
-    confirm = confirm or confirm_yt_dlp_update
-    if not confirm(t(f"\n💡 有新版本 {latest}，現在自動更新嗎？[Y/n]: ",
-                     f"\n💡 Version {latest} is available. Update now? [Y/n]: ")):
+    editable = _is_editable_install()
+    if editable:
+        prompt = t(f"\n💡 有新版本 {latest}。目前使用可編輯安裝，要改用 PyPI 發行版嗎？[y/N]: ",
+                   f"\n💡 Version {latest} is available. Replace the editable install with the PyPI release? [y/N]: ")
+    else:
+        prompt = t(f"\n💡 有新版本 {latest}，現在自動更新嗎？[Y/n]: ",
+                   f"\n💡 Version {latest} is available. Update now? [Y/n]: ")
+    accepted = confirm(prompt) if confirm else confirm_yt_dlp_update(prompt, default_yes=not editable)
+    if not accepted:
         return None
     if installed_version is None:
         import importlib.metadata

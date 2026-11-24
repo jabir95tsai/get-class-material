@@ -8,14 +8,16 @@ import tempfile
 import threading
 import unittest
 import urllib.error
+from urllib.parse import urlsplit
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from ntu_cool_materials import cli, course_pipeline as p, http_io
 from ntu_cool_materials.announcements import html_to_markdown, canvas_file_links
-from ntu_cool_materials.canvas_client import CanvasClient, SessionExpiredError
+from ntu_cool_materials.canvas_client import CanvasAPIError, CanvasClient, SessionExpiredError
 from ntu_cool_materials.session_client import CanvasSessionClient
+from ntu_cool_materials.sync import sync_course_materials
 from ntu_cool_materials.storage import ManifestStore, atomic_write_text, sha256_file
 
 
@@ -210,6 +212,174 @@ class PipelineTests(unittest.TestCase):
         again = p.plan_course(self.client, "1", self.root)
         self.assertEqual(old, {w.module["id"]: w.week_dir for w in again.weeks})
 
+    def test_planning_preserves_legacy_metadata_and_colliding_files_across_reruns(self):
+        week = self.root / "Synthetic (1)" / "week1"
+        originals = {
+            "metadata/mapping.json": b'{"file": 42}',
+            "files/notes.pdf": b"legacy notes",
+            "notes.pdf": b"current notes",
+            "pages/lecture.md": b"legacy page",
+            "videos/lecture.mp4": b"legacy video",
+        }
+        for name, data in originals.items():
+            path = week / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        self.client.list_paginated.return_value = [
+            {"id": 10, "name": "Week 1", "items": [{"type": "Page"}]},
+        ]
+        for run in (1, 2):
+            with self.subTest(run=run):
+                plan = p.plan_course(self.client, "1", self.root)
+                self.assertEqual(plan.weeks[0].week_dir, week)
+                for name in ("metadata/mapping.json", "files/notes.pdf", "notes.pdf"):
+                    self.assertEqual((week / name).read_bytes(), originals[name])
+                for name in ("pages/lecture.md", "videos/lecture.mp4"):
+                    self.assertEqual((week / Path(name).name).read_bytes(), originals[name])
+                    self.assertFalse((week / name).parent.exists())
+
+    def test_sync_dry_run_lists_canvas_files_and_creates_only_the_manifest(self):
+        self.client.list_courses.return_value = [{"id": "1", "name": "Synthetic"}]
+        self.client.list_modules.return_value = [{"id": 10, "items": []}]
+        self.client.list_course_files.return_value = [
+            {"id": 42, "display_name": "notes.pdf", "size": 4, "url": "https://canvas.invalid/file"},
+        ]
+        output = self.root / "preview"
+        with (
+            patch.object(cli, "CanvasClient", return_value=self.client),
+            patch.object(cli, "_secrets_dir", return_value=self.root / ".secrets"),
+        ):
+            rc = cli.main(["--base-url", "https://canvas.invalid", "--token", "fixture",
+                           "sync", "--course-id", "1", "--out", str(output), "--dry-run"])
+        self.assertEqual(rc, 0)
+        self.client.list_courses.assert_called_once()
+        self.client.list_modules.assert_called_once_with("1")
+        self.client.list_course_files.assert_called_once_with("1")
+        self.client.download_file_url.assert_not_called()
+        manifest = output / ".ntu_cool_materials.sqlite3"
+        self.assertEqual(list(output.iterdir()), [manifest])
+        self.assertTrue(manifest.read_bytes().startswith(b"SQLite format 3\0"))
+
+    def test_course_download_includes_paginated_files_and_deduplicates_references(self):
+        base_url = self.client.base_url
+        client = CanvasSessionClient(base_url, {})
+        def file_info(fid, name, **flags):
+            return {"id": fid, "display_name": name, "url": f"{base_url}/files/{fid}/download",
+                    "size": 3, "updated_at": "current", **flags}
+        module_file = file_info(1, "Slides.pdf")
+        page_file = file_info(2, "Exercise.pdf")
+        announcement_file = file_info(3, "Notice.pdf")
+        loose_file = file_info(4, "Files only.pdf")
+        loose_file_second_page = file_info(5, "Dataset")
+        more_files = f"{base_url}/api/v1/courses/1/files?page=2"
+        files = [module_file, page_file, announcement_file, loose_file,
+                 file_info(6, "Locked.pdf", locked_for_user=True), file_info(7, "Hidden.pdf", hidden_for_user=True)]
+
+        def request(url):
+            path = urlsplit(url).path
+            if path == "/api/v1/courses/1":
+                return self.client.get_course.return_value, {}
+            if path.endswith("/modules"):
+                return [{"id": 10, "name": "Week 1", "items": [
+                    {"type": "File", "content_id": 1, "title": "Slides.pdf"},
+                    {"type": "Page", "page_url": "notes", "title": "Notes"},
+                ]}], {}
+            if path.endswith("/discussion_topics"):
+                return [{"title": "Notice", "attachments": [{"id": 3}]}], {}
+            if path.endswith("/pages/notes"):
+                return {"title": "Notes", "body": '<a href="/files/2/download">Exercise</a>'}, {}
+            if path == "/api/v1/courses/1/files":
+                if url == more_files:
+                    return [dict(loose_file, id="4"), loose_file_second_page], {}
+                return files, {"Link": f'<{more_files}>; rel="next"'}
+            fid = int(path.rsplit("/", 1)[-1])
+            return {1: module_file, 2: page_file, 3: announcement_file}[fid], {}
+
+        def download(_fid, target, _headers, **_kwargs):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"new")
+
+        kwargs = dict(course_id="1", output_dir=self.root, client=client, skip_youtube=True, skip_cool_videos=True)
+        with patch.object(client, "_request_json", side_effect=request) as api, \
+                patch.object(p, "_download_canvas_file", side_effect=download) as transfer:
+            plan = p.download_course(**kwargs)
+            self.assertTrue(plan.stats.successful)
+            self.assertCountEqual([call.args[0] for call in transfer.call_args_list], ["1", "2", "3", "4", "5"])
+            self.assertEqual(sorted(path.name for path in (plan.course_dir / "files").iterdir()),
+                             ["Dataset", "Files only.pdf"])
+            overview = (plan.course_dir / "course_overview.md").read_text(encoding="utf-8")
+            self.assertIn("files/Files%20only.pdf", overview)
+            self.assertIn("files/Dataset>", overview)
+            transfer.reset_mock()
+            self.assertTrue(p.download_course(**kwargs).stats.successful)
+            transfer.assert_not_called()
+            api.reset_mock()
+            p.download_course(**kwargs, skip_pdfs=True)
+            self.assertFalse(any(urlsplit(call.args[0]).path == "/api/v1/courses/1/files"
+                                 for call in api.call_args_list))
+
+    def test_week_title_supersedes_prior_files_listing(self):
+        info = {"id": 7, "display_name": "raw.xlsx", "size": 3, "updated_at": "first",
+                "url": "https://cool.ntu.edu.tw/files/7/download"}
+        self.client.list_course_files.return_value = [info]
+        self.client.get_json.return_value = info
+
+        def download(fid, target, headers, **kwargs):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"abc")
+
+        with patch.object(p, "_download_canvas_file", side_effect=download) as transfer:
+            loose = self.plan([])
+            self.assertEqual(p.download_files(loose, self.client, only_unlisted=True).done, 1)
+            old = self.root / "files" / "raw.xlsx"
+            old.with_suffix(".xlsx.md").write_text("old notes")
+            week = self.plan([{"type": "File", "content_id": 7, "title": "Lecture example"}])
+            self.assertEqual(p.download_files(week, self.client).skipped, 1)
+            self.assertEqual((self.root / "week1" / "Lecture example.xlsx").read_bytes(), b"abc")
+            self.assertFalse(old.exists())
+            self.assertFalse(old.with_suffix(".xlsx.md").exists())
+            self.assertEqual(p.download_files(week, self.client).skipped, 1)
+            transfer.assert_called_once()
+
+    def test_changed_files_copy_survives_failed_week_download(self):
+        info = {"id": 7, "display_name": "raw.pdf", "size": 3, "updated_at": "second"}
+        self.client.get_json.return_value = info
+        old = self.root / "files" / "raw.pdf"
+        key = "course-files:file:7"
+        with ManifestStore(self.root / ".ntu_cool_materials.sqlite3") as store:
+            store.artifact_path(key, old.parent, old.name)
+            old.parent.mkdir()
+            old.write_bytes(b"old")
+            store.record_artifact(key, old, p._canvas_file_version(dict(info, updated_at="first")))
+        week = self.plan([{"type": "File", "content_id": 7, "title": "Lecture"}])
+        with patch.object(p, "_download_canvas_file", side_effect=OSError("offline")):
+            self.assertTrue(p.download_files(week, self.client).failed)
+            self.assertEqual(old.read_bytes(), b"old")
+        def download(fid, target, headers, **kwargs):
+            target.parent.mkdir(exist_ok=True)
+            target.write_bytes(b"new")
+        with patch.object(p, "_download_canvas_file", side_effect=download):
+            self.assertEqual(p.download_files(week, self.client).done, 1)
+        self.assertFalse(old.exists())
+        self.assertEqual((self.root / "week1" / "Lecture.pdf").read_bytes(), b"new")
+
+    def test_course_file_listing_failure_reports_incomplete_and_keeps_module_downloads(self):
+        self.client.list_paginated.return_value = [
+            {"id": 10, "name": "Week 1", "items": [{"type": "File", "content_id": 1, "title": "Slides.pdf"}]}
+        ]
+        self.client.list_course_files.side_effect = CanvasAPIError("Files unavailable", status_code=403)
+        self.client.get_json.return_value = {"display_name": "Slides.pdf", "size": 3}
+        def download(_fid, target, _headers, **_kwargs):
+            target.write_bytes(b"new")
+        with patch.object(p, "_download_canvas_file", side_effect=download):
+            plan = p.download_course(course_id="1", output_dir=self.root, client=self.client,
+                                     skip_announcements=True, skip_pages=True,
+                                     skip_youtube=True, skip_cool_videos=True)
+        self.assertEqual(plan.stats.pdfs.done, 1)
+        self.assertFalse(plan.stats.successful)
+        self.assertTrue((plan.course_dir / "week1/Slides.pdf").is_file())
+        self.assertIn("Files unavailable", plan.stats.pdfs.failed[0])
+
     def test_file_collision_update_size_corruption_and_hash_verification(self):
         items = [{"id": i, "content_id": i, "type": "File", "title": "Lecture.pdf"} for i in (1, 2)]
         version = ["v1"]
@@ -273,7 +443,7 @@ class PipelineTests(unittest.TestCase):
         args = cli._build_parser().parse_args(["download-course", "--course-id", "1", "--out", str(self.root),
             "--headers-file", str(headers), "--skip-pages", "--skip-announcements", "--skip-youtube", "--skip-cool-videos"])
         with patch.object(p, "plan_course", return_value=self.plan([])), \
-             patch.object(p, "download_files", return_value=p.StageStats(failed=["synthetic failure"])):
+             patch.object(p, "download_files", side_effect=[p.StageStats(failed=["synthetic failure"]), p.StageStats()]):
             self.assertEqual(cli._cmd_download_course(self.client.base_url, args), 1)
         report = json.loads((self.root / ".download_report.json").read_text())
         self.assertFalse(report["successful"])
@@ -336,7 +506,7 @@ class PipelineTests(unittest.TestCase):
             "--headers-file", str(headers), "--notebooklm", "--skip-pages", "--skip-announcements",
             "--skip-youtube", "--skip-cool-videos"])
         with patch.object(p, "plan_course", return_value=self.plan([])), \
-             patch.object(p, "download_files", return_value=p.StageStats(failed=["synthetic failure"])), \
+             patch.object(p, "download_files", side_effect=[p.StageStats(failed=["synthetic failure"]), p.StageStats()]), \
              patch.object(cli, "_cmd_notebooklm", return_value=0) as imported:
             self.assertEqual(cli._cmd_download_course(self.client.base_url, args), 1)
         imported.assert_called_once()
@@ -393,8 +563,9 @@ class PipelineTests(unittest.TestCase):
                  patch.object(cli, "auto_update_dependencies"), \
                  patch.object(cli, "CanvasSessionClient", return_value=self.client), \
                  patch.object(cli, "download_course", return_value=plan), \
+                 patch("ntu_cool_materials.ntu_credentials.offer_credentials"), \
                  patch("ntu_cool_materials.console.stdin_is_interactive", return_value=True), \
-                 patch("ntu_cool_materials.notebooklm_flow.choose", return_value=answer) as choose, \
+                 patch("ntu_cool_materials.console.choose", return_value=answer) as choose, \
                  patch("ntu_cool_materials.notebooklm_api.api_available", return_value=available), \
                  patch.object(cli, "_cmd_notebooklm", return_value=0) as do_import, \
                  patch("builtins.input", side_effect=["1", "q"]):
@@ -408,8 +579,15 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(do_import.call_args.args[0], plan.course_dir)
 
     def test_unknown_real_extension_is_preserved_without_doubling(self):
-        item = {"title": "exercise.py", "content_details": {"filename": "exercise.py"}}
-        self.assertEqual(p._file_item_target_name(item), "exercise.py")
+        for title, details, expected in [
+            ("exercise.py", {"filename": "exercise.py"}, "exercise.py"),
+            ("measurements", {"display_name": "raw.XYZDATA"}, "measurements.xyzdata"),
+            ("archive.XYZDATA", {}, "archive.xyzdata"),
+            ("lecture.pdf", {"filename": "raw.xyzdata"}, "lecture.xyzdata"),
+            ("lecture", {}, "lecture.pdf"),
+        ]:
+            with self.subTest(title=title, details=details):
+                self.assertEqual(p._file_item_target_name({"title": title, "content_details": details}), expected)
 
     def test_youtube_only_submits_missing_ids_and_reuses_across_weeks(self):
         items = [{"type": "ExternalUrl", "title": title, "external_url": f"https://youtu.be/{vid}"}
@@ -460,7 +638,7 @@ class PipelineTests(unittest.TestCase):
             # Without hard-link support the copy stays and the cache goes.
             other = p.CoursePlan({"id": "1", "name": "Synthetic"}, "1", self.root / "fat",
                                  [p.WeekPlan("week1", {"id": 10, "items": items}, self.root / "fat/week1")])
-            with patch.object(p.os, "link", side_effect=OSError("unsupported")):
+            with patch("ntu_cool_materials.youtube_files.os.link", side_effect=OSError("unsupported")):
                 self.assertEqual(p.download_youtube(other, cookies_path=self.root / "none").done, 1)
             self.assertTrue(Path(items[0]["_local_path"]).is_file())
             self.assertFalse((self.root / "fat/.media-cache/youtube/aaaaaaaaaaa.mp4").exists())
@@ -495,11 +673,16 @@ class PipelineTests(unittest.TestCase):
 
         with patch.object(p, "_capture_cool_video_in_page", return_value=view), \
              patch.object(p, "_download_signed_url") as http_get, \
+             patch("ntu_cool_materials.youtube_files.os.link", side_effect=OSError("unsupported")), \
              patch.object(p.shutil, "which", side_effect=lambda name: "ffmpeg" if name == "ffmpeg" else None), \
              patch.object(p.subprocess, "run", side_effect=fake_yt_dlp):
             stats = p.capture_and_download_cool_videos_in_page(plan, Mock(), {}, course_id="1")
         http_get.assert_not_called()
         self.assertEqual((stats.done, stats.failed), (1, []))
+        cached = plan.course_dir / ".media-cache/youtube/OxGcm2y3zaE.mp4"
+        placed = Path(plan.weeks[0].items[0]["_local_path"])
+        self.assertEqual(placed.read_bytes(), cached.read_bytes())
+        self.assertFalse(placed.samefile(cached))
         pending, skipped = p._pending_cool_videos(plan)
         self.assertEqual((pending, skipped), ([], 1))
 
@@ -599,7 +782,7 @@ class PipelineTests(unittest.TestCase):
         sso.assert_not_called()
         self.assertEqual(len(stats.failed), 1)
 
-    def test_pre_manifest_files_are_adopted_not_downloaded_again(self):
+    def test_pre_manifest_files_are_refetched_even_when_same_size(self):
         items = [{"id": i, "content_id": i, "type": "File", "title": title}
                  for i, title in ((1, "Kept.pdf"), (2, "Stale.pdf"))]
         self.client.get_json.side_effect = lambda path: {
@@ -612,10 +795,59 @@ class PipelineTests(unittest.TestCase):
             path.write_bytes(b"new")
         with patch.object(p, "_download_canvas_file", side_effect=download) as dl:
             stats = p.download_files(self.plan(items), self.client)
-            self.assertEqual((stats.skipped, stats.done), (1, 1))
-            self.assertEqual([c.args[0] for c in dl.call_args_list], ["2"])
-            self.assertEqual((week / "Kept.pdf").read_bytes(), b"abc")
+            self.assertEqual((stats.skipped, stats.done), (0, 2))
+            self.assertCountEqual([c.args[0] for c in dl.call_args_list], ["1", "2"])
+            self.assertEqual((week / "Kept.pdf").read_bytes(), b"new")
             self.assertEqual(p.download_files(self.plan(items), self.client).skipped, 2)
+
+    def test_legacy_manifest_cannot_keep_a_same_size_file_marked_current(self):
+        item = {"id": 1, "content_id": 1, "type": "File", "title": "Lecture.pdf"}
+        plan = self.plan([item])
+        self.client.get_json.return_value = {"display_name": "Lecture.pdf", "size": 3, "updated_at": "v1"}
+        with p._manifest(plan) as store:
+            path = store.artifact_path("10:file:1", plan.weeks[0].week_dir, "Lecture.pdf")
+            path.parent.mkdir()
+            path.write_bytes(b"old")
+            store.record_artifact("10:file:1", path, json.dumps(["v1", None, 3]))
+
+        def download(_fid, target, _headers, **_kwargs):
+            target.write_bytes(b"new")
+
+        plan.verify_files = True
+        with patch.object(p, "_download_canvas_file", side_effect=http_io.DownloadError("interrupted")):
+            self.assertTrue(p.download_files(plan, self.client).failed)
+        self.assertEqual(path.read_bytes(), b"old")
+        with p._manifest(plan) as store:
+            self.assertEqual(store.artifact("10:file:1")["version"], json.dumps(["v1", None, 3]))
+        with patch.object(p, "_download_canvas_file", side_effect=download) as transfer:
+            self.assertEqual(p.download_files(plan, self.client).done, 1)
+            self.assertEqual(path.read_bytes(), b"new")
+            self.assertEqual(p.download_files(plan, self.client).skipped, 1)
+        transfer.assert_called_once()
+
+    def test_sync_does_not_stamp_version_when_file_is_locked(self):
+        course = {"id": 1, "name": "Synthetic"}
+        info = {"id": 2, "url": "https://cool.ntu.edu.tw/files/2/download",
+                "display_name": "notes.pdf", "updated_at": "first", "size": 3}
+        self.client.list_course_files.return_value = [info]
+        def download(_url, target, **_kwargs):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"new" if info["updated_at"] == "second" else b"old")
+        self.client.download_file_url.side_effect = download
+        with ManifestStore(self.root / "manifest.sqlite3") as store:
+            def sync():
+                return sync_course_materials(client=self.client, course=course, output_dir=self.root,
+                                             store=store, include_modules=False, verify_files=True)
+            self.assertEqual(sync().downloaded, 1)
+            previous = store.get_file("2")
+            self.assertEqual(previous.local_path.read_bytes(), b"old")
+            info.update(locked=True, updated_at="second")
+            self.assertEqual(sync().skipped, 1)
+            self.assertEqual(store.get_file("2"), previous)
+            info["locked"] = False
+            self.assertEqual(sync().downloaded, 1)
+            self.assertEqual(previous.local_path.read_bytes(), b"new")
+            self.assertEqual(sync().unchanged, 1)
 
     def test_pre_manifest_videos_are_adopted_without_downloader_or_browser(self):
         plan = self.plan([

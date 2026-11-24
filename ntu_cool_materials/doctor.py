@@ -1,16 +1,8 @@
-"""Diagnostic + auto-installer for ntu-cool-material.
+"""Environment diagnostics and setup for get-class-material.
 
-Two modes:
-
-- `run_doctor()` — full report. Shows every check (✓/⚠/✗) and any fix hints.
-- `ensure_ready()` — quiet "first-run" check used by `pick`. Only prints when
-  something is missing, attempts to auto-install where it safely can, prints
-  copy-pasteable instructions where it can't.
-
-Auto-install covers: pip-installable Python deps, the Playwright Chromium binary,
-and (best-effort, with user confirmation) Node.js / ffmpeg via winget on Windows
-or Homebrew on macOS. Linux package managers vary too widely to attempt; we
-print the right command for the user to run themselves.
+The doctor command prints every check. With --fix it runs available fixes
+for the reported issues. The picker uses ensure_ready to check its required
+tools, attempt available repairs and offer optional installs interactively.
 """
 from __future__ import annotations
 
@@ -26,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .console import pip_install_hint
+from .session_paths import secrets_dir
 from .i18n import t
 
 
@@ -150,7 +143,7 @@ def _install_ffmpeg_auto() -> bool:
 
 
 def _scripts_dir() -> Path | None:
-    """Where pip drops console-script .exe shims for this Python install."""
+    """Locate the current interpreter's console-script installation directory."""
     try:
         path = sysconfig.get_path("scripts")
     except Exception:
@@ -228,19 +221,11 @@ _POSIX_RC_MARKER_END = "# <<< get-class-material PATH fix <<<"
 
 
 def _posix_shell_rc_path() -> Path | None:
-    """Best-guess rc file to append PATH exports to.
+    """Choose the startup file for a user PATH export.
 
-    macOS: $SHELL is typically /bin/zsh; Terminal.app launches login shells
-    so .zprofile is the canonical "ran-on-login" hook. We prefer .zprofile
-    over .zshrc because .zshrc is interactive-only and skipped for some
-    non-interactive contexts (cron, GUI launchers).
-
-    Linux: zsh users uncommon; default to ~/.bashrc since most distros
-    source it from both login and interactive shells.
-
-    Fish + nushell + other exotic shells: not supported — too many
-    syntactic variations. Returns None and the caller prints manual
-    instructions.
+    Use .zprofile for zsh. For bash use .bash_profile on macOS and .bashrc
+    elsewhere. An unrecognized shell falls back to .zprofile on macOS and
+    to manual instructions elsewhere.
     """
     shell = os.environ.get("SHELL", "")
     home = Path.home()
@@ -596,9 +581,8 @@ def run_doctor(
     print(t("ntu-cool-material 系統檢查", "ntu-cool-material doctor"))
     print(f"get-class-material {__version__}")
     try:
-        from .cli import _secrets_dir
         from .update_check import check_for_update
-        _newer = check_for_update(__version__, cache_path=_secrets_dir() / "update_check.json")
+        _newer = check_for_update(__version__, cache_path=secrets_dir() / "update_check.json")
         if _newer:
             print(t(
                 f"  💡 有新版本 {_newer},更新: {pip_install_hint('get-class-material')}",
@@ -644,13 +628,10 @@ def run_doctor(
     return 1
 
 
-# "Blocking" — without these, nothing works at all. Refuse to proceed if we
-# can't get them installed. check_playwright_chromium reports under the package
-# name when Playwright itself can't be imported, so both names must block.
+# The picker requires both the Playwright package and its Chromium binary.
+# A missing package and a missing browser are reported under different names.
 BLOCKING_NAMES = {"Python 3.11 以上", "Playwright (Python 套件)", "Playwright Chromium", "yt-dlp"}
-# "Recommended" — only the YouTube stage needs them (and the PATH entry only
-# shortens `python -m ntu_cool_materials pick` to `get-class-material`). They touch
-# the system (winget/brew, the user's PATH), so they are offered, never forced.
+# The picker offers these optional media tools and the PATH fix interactively.
 RECOMMENDED_NAMES = {
     "Node.js (下載 YouTube 影片用)",
     "ffmpeg (下載 YouTube 影片用)",
@@ -753,14 +734,11 @@ def ensure_ready(
     input_fn=None,
     now: float | None = None,
 ) -> bool:
-    """Quiet first-run check used by `pick`. Returns True iff every required item is OK
-    after auto-fix attempts. Stays silent when everything is already fine.
+    """Check the picker's required tools and attempt available repairs.
 
-    Required items are installed without asking (it's routine setup and nothing
-    works without them). Recommended ones are offered with a [Y/n] prompt; a
-    "no" or a failed install is remembered in `state_path` for 30 days. With no
-    terminal to answer (`input_fn` None and stdin not interactive) nothing
-    optional is installed.
+    Return False if a required check still fails. Offer optional fixes when
+    an input function is available. A declined or failed offer is deferred
+    for 30 days when the setup state can be saved.
     """
     from . import console
     if state_path is None:
@@ -769,11 +747,8 @@ def ensure_ready(
         input_fn = input
     relevant = BLOCKING_NAMES | RECOMMENDED_NAMES
 
-    # Gathering the checks is the real wait the user sits through before the
-    # course list shows (Playwright launches a context to detect Chromium —
-    # multiple seconds). Spin a bar over it so a returning user, for whom this
-    # is otherwise dead-silent, can see it's working rather than hung. The
-    # spinner stops (and clears its line) before any of the messages below.
+    # Starting the Playwright driver to locate its Chromium executable can
+    # take time even when all the required tools are already installed.
     from .spinner import spinner
     with spinner(t("檢查環境中…", "Checking your setup…")):
         initial = [c for c in _all_checks(headers_path, youtube_cookies_path) if c.name in relevant]

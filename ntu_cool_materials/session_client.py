@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import json
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
+from email.message import Message
 from pathlib import Path
 from typing import Any
 
-from .http_io import request_json, safe_url
-from .canvas_client import CanvasAPIError, NoRedirectHandler, SessionExpiredError, parse_link_header
+from .http_io import NoRedirectHandler, origin, request_json, safe_url
+from .canvas_errors import CanvasAPIError, SessionExpiredError
+from .canvas_pagination import iter_page_items
 
 
 # Tri-state result of a cheap pre-flight auth probe. Deliberately NOT a bool:
@@ -31,7 +32,11 @@ DROP_REQUEST_HEADER_NAMES = {
 }
 
 
-def read_headers_file(path: Path) -> dict[str, str]:
+DEFAULT_BASE_URL = "https://cool.ntu.edu.tw"
+SESSION_ORIGIN_HEADER = "canvas-session-origin"
+
+
+def read_headers_file(path: Path, *, base_url: str = DEFAULT_BASE_URL) -> dict[str, str]:
     text = path.read_text(encoding="utf-8").strip()
     if not text:
         raise ValueError(f"Headers file is empty: {path}")
@@ -40,18 +45,21 @@ def read_headers_file(path: Path) -> dict[str, str]:
         data = json.loads(text)
         if not isinstance(data, dict):
             raise ValueError("JSON headers file must contain an object.")
-        return {str(key): str(value) for key, value in data.items()}
+        headers = {str(key): str(value) for key, value in data.items()}
+    else:
+        headers = {}
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith(":"):
+                continue
+            name, separator, value = line.partition(":")
+            if separator:
+                headers[name.strip()] = value.strip()
 
-    headers: dict[str, str] = {}
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith(":"):
-            continue
-        name, separator, value = line.partition(":")
-        if not separator:
-            continue
-        headers[name.strip()] = value.strip()
-
+    bindings = [headers.pop(name) for name in list(headers) if name.lower() == SESSION_ORIGIN_HEADER]
+    saved_origin = bindings[0] if bindings else DEFAULT_BASE_URL
+    if len(bindings) > 1 or origin(saved_origin) != origin(base_url):
+        raise ValueError("Saved Canvas session origin does not match the base URL. Refresh login for this origin.")
     if not headers:
         raise ValueError(f"No headers found in {path}")
     return headers
@@ -91,22 +99,11 @@ class CanvasSessionClient:
         return list(self.list_paginated("/api/v1/courses", params=params))
 
     def check_auth(self, *, timeout: float = 6.0) -> str:
-        """Cheap, fast pre-flight: is this session still logged in?
+        """Probe /api/v1/users/self before listing courses, with redirects disabled.
 
-        Returns one of AUTH_OK / AUTH_EXPIRED / AUTH_UNKNOWN. Hits the tiny
-        `/api/v1/users/self` endpoint with redirects DISABLED and a short
-        timeout, so we learn the answer in ~one round-trip instead of paying
-        for the full doctor pass + a heavy, redirect-chasing, 30s-capped
-        `list_courses` before discovering the cookie is dead.
-
-        Detection rules (conservative — only flag expiry on definitive signals):
-          - HTTP 200            → AUTH_OK
-          - HTTP 401            → AUTH_EXPIRED (Canvas's unauthenticated reply)
-          - 3xx whose Location  → AUTH_EXPIRED when it points off the Canvas
-            origin (i.e. a redirect into the NTU SAML/SSO login flow)
-          - anything else, incl. timeouts / DNS / connection errors / a 3xx
-            that stays on-origin → AUTH_UNKNOWN (caller proceeds normally; the
-            existing 401-retry wrappers still cover a session that dies later)
+        A 2xx response means AUTH_OK. A 401 or a 301/302/303/307/308 pointing
+        outside the Canvas origin means AUTH_EXPIRED. Other HTTP results and
+        connection failures leave the status AUTH_UNKNOWN.
         """
         url = self._build_url("/api/v1/users/self")
         request = urllib.request.Request(url, headers=self._request_headers(url))
@@ -135,6 +132,10 @@ class CanvasSessionClient:
         if not isinstance(data, dict):
             raise CanvasAPIError(f"Expected an object response for course {course_id}.")
         return data
+
+    def list_course_files(self, course_id: str) -> list[dict[str, Any]]:
+        quoted_course_id = urllib.parse.quote(str(course_id), safe="")
+        return list(self.list_paginated(f"/api/v1/courses/{quoted_course_id}/files", params=[("per_page", "100")]))
 
     def list_course_announcements(self, course_id: str) -> list[dict[str, Any]]:
         quoted_course_id = urllib.parse.quote(str(course_id), safe="")
@@ -182,22 +183,9 @@ class CanvasSessionClient:
         path_or_url: str,
         params: Sequence[tuple[str, str]] | None = None,
     ) -> Iterator[dict[str, Any]]:
-        next_url: str | None = self._build_url(path_or_url, params=params)
+        yield from iter_page_items(self._build_url(path_or_url, params=params), self._request_json)
 
-        while next_url:
-            data, headers = self._request_json(next_url)
-            if not isinstance(data, list):
-                raise CanvasAPIError(f"Expected a list response from {next_url!r}.")
-
-            for item in data:
-                if isinstance(item, dict):
-                    yield item
-
-            next_url = parse_link_header(headers.get("Link")).get("next")
-            if next_url:
-                time.sleep(0.05)
-
-    def _request_json(self, url: str) -> tuple[list[Any] | dict[str, Any], urllib.request._headers]:  # type: ignore[name-defined]
+    def _request_json(self, url: str) -> tuple[list[Any] | dict[str, Any], Message]:
         try:
             return request_json(url, self._request_headers, timeout=self.timeout, api_origin=self.base_url)
         except urllib.error.HTTPError as exc:

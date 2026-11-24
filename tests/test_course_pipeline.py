@@ -61,6 +61,7 @@ def _make_page(*, url: str, goto_raises: Exception | None = None,
 
 class EnsureLoggedInTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.enterContext(mock.patch("ntu_cool_materials.ntu_credentials.try_saved_login", return_value=False))
         # `_ensure_logged_in` print()s status updates in Traditional Chinese.
         # The CLI normally calls _force_utf8_streams() to reconfigure stdout
         # before any such print, but unit tests bypass that path — and the
@@ -176,8 +177,7 @@ class CourseFileHandlingTests(unittest.TestCase):
             )
 
     def test_unknown_extension_forced_to_pdf_by_default(self) -> None:
-        """Files with no/unknown extension still get .pdf in default mode for a
-        uniform layout — only known non-PDF types are exempt."""
+        """An extensionless title and display name use the default .pdf suffix."""
         item = {
             "id": 1,
             "type": "File",
@@ -190,8 +190,7 @@ class CourseFileHandlingTests(unittest.TestCase):
         )
 
     def test_pdf_file_unchanged_in_both_modes(self) -> None:
-        """A real PDF should produce the same filename regardless of mode —
-        guards against the .pdf.pdf double-extension regression."""
+        """An existing .pdf suffix appears once in the default target name."""
         item = {
             "id": 2,
             "type": "File",
@@ -316,12 +315,7 @@ class CourseFileHandlingTests(unittest.TestCase):
 
 
 class MaybeRetryYoutubeWithLoginTests(unittest.TestCase):
-    """Tests for the post-failure YouTube cookie capture prompt.
-
-    Strategy reminder: yt-dlp runs first without cookies. If any downloads
-    failed AND we don't have cookies yet AND we're interactive AND in a TTY,
-    THEN we prompt. Most users (public-video courses) never see this.
-    """
+    """Check when failed YouTube downloads prompt for a browser-cookie retry."""
 
     def setUp(self) -> None:
         self._stdout_ctx = contextlib.redirect_stdout(io.StringIO())
@@ -329,8 +323,7 @@ class MaybeRetryYoutubeWithLoginTests(unittest.TestCase):
         self.addCleanup(self._stdout_ctx.__exit__, None, None, None)
 
     def test_skips_when_cookies_already_exist(self) -> None:
-        """If we already have cookies, the failures aren't auth-related —
-        retrying with the same cookies wouldn't fix anything."""
+        """An existing cookie file suppresses the browser-login offer after a failure."""
         with tempfile.TemporaryDirectory() as temp:
             cookies = Path(temp) / "yt.txt"
             cookies.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")

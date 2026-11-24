@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import argparse
 import time
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .console import python_cmd
+from .session_paths import secrets_dir
+
+if TYPE_CHECKING:
+    from playwright.sync_api import BrowserContext
 
 
 YOUTUBE_URL = "https://www.youtube.com/"
@@ -69,6 +75,7 @@ def export_youtube_cookies(
             "user_data_dir": str(profile_dir),
             "headless": headless,
             "accept_downloads": False,
+            "chromium_sandbox": True,
         }
         if browser_channel and browser_channel != "chromium":
             launch_kwargs["channel"] = browser_channel
@@ -118,7 +125,7 @@ def _is_relevant_cookie_domain(domain: str) -> bool:
     } or normalized.endswith(".youtube.com") or normalized.endswith(".google.com")
 
 
-def _has_login_cookie(cookies: list[dict[str, object]]) -> bool:
+def _has_login_cookie(cookies: Sequence[Mapping[str, object]]) -> bool:
     names = {str(cookie.get("name") or "") for cookie in cookies}
     return bool(
         names
@@ -137,7 +144,7 @@ def _has_login_cookie(cookies: list[dict[str, object]]) -> bool:
     )
 
 
-def _wait_for_login_cookies(context, *, timeout_ms: int) -> None:  # type: ignore[no-untyped-def]
+def _wait_for_login_cookies(context: BrowserContext, *, timeout_ms: int) -> None:
     deadline = time.monotonic() + timeout_ms / 1000
     while time.monotonic() < deadline:
         cookies = context.cookies(
@@ -183,8 +190,7 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Open a dedicated Playwright browser profile and export YouTube cookies for yt-dlp.",
     )
     # Same home-anchored secrets dir as the main CLI, so its YouTube stage finds the file.
-    from .cli import _secrets_dir
-    base = _secrets_dir()
+    base = secrets_dir()
     parser.add_argument("--profile-dir", default=str(base / "youtube_browser_profile"),
                         help="Dedicated browser profile directory.")
     parser.add_argument("--cookies-file", default=str(base / "youtube_cookies.txt"),

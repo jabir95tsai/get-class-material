@@ -45,7 +45,9 @@ get-class-material
 
 ## 下載結果
 
-預設存到「文件（Documents）」下的 `ntu-cool-gcm_material`。每門課會建立「課程名稱（課程 ID）」資料夾，單元名稱有週次時會依週次整理。
+教材優先使用「文件（Documents）」下的 `ntu-cool-gcm_material`。只有 Documents 裡還沒有教材庫時，才會沿用目前目錄下既有的同名資料夾。也可以用 `--out` 指定位置。每門課會建立「課程名稱（課程 ID）」資料夾，單元名稱有週次時會依週次整理。
+
+老師把原本只在 COOL「檔案」裡的教材加入週次後，下次下載會按 Canvas 檔案 ID 對應，採用週次內的標題及原始副檔名。版本與內容核對相符時會直接沿用本機檔案。週次檔案就緒後，舊的受管理副本會收在課程的 `.previous-course-files`，NotebookLM 掃描時會略過這個備份目錄。
 
 ```text
 ntu-cool-gcm_material/
@@ -53,6 +55,7 @@ ntu-cool-gcm_material/
     ├── course_overview.md        ← 課程索引，從這裡開始
     ├── announcements/
     │   └── announcements.md
+    ├── files/                      ← 只出現在 Canvas「檔案」區的教材
     ├── week1/
     │   ├── 講義.pdf
     │   ├── 課程頁面.md
@@ -70,9 +73,13 @@ ntu-cool-gcm_material/
 
 > **提示**：可隨時重跑。補抓教材或下載中斷時，重新執行 `get-class-material` 並選同一門課。程式會重用已完成的檔案，並在伺服器支援時續傳中斷的檔案。
 
+新版首次重跑時會重新下載舊清單中的 Canvas 檔案，因為舊紀錄可能只比對過檔案大小。下載成功後，後續重跑會沿用新的下載紀錄。
+
 啟用 NotebookLM 匯入時，超過 200 MB 的 MP4 會用 `ffmpeg` 和 `ffprobe` 自動分成 `part 1`、`part 2` 等可獨立播放的檔案。每段最多 200 MB，各占一個 NotebookLM 來源名額，原始影片會保留。
 
 匯入時預設只顯示略過的檔案總數。加上 `--show-skipped` 可查看每種原因和對應的檔案，也能搭配 `--dry-run` 預覽。
+
+更新 NotebookLM 公告時，需要先有一個空位上傳新版。新版就緒後，工具才會依匯入紀錄的來源 ID 移除舊版。舊版工具留下的無 ID 紀錄會保留原來源，`--verify-only` 會把它列為無法核對。
 
 ## 常用指令
 
@@ -89,10 +96,11 @@ ntu-cool-gcm_material/
 <details>
 <summary>其他指令與相容性</summary>
 
-- 跳過附件、頁面或公告可分別加上 `--skip-pdfs`、`--skip-pages`、`--skip-announcements`。
+- `--skip-pdfs` 跳過單元檔案和「檔案」區補抓。頁面及公告連同各自的附件，可分別用 `--skip-pages` 和 `--skip-announcements` 跳過。
 - 加上 `--lang en` 使用英文介面，或加上 `--keep-terminal` 在結束時保留終端機。
 - 舊指令 `ntu-cool-gcm` 仍可使用。
 - 列出可見課程可執行 `ntu-cool-materials courses --refresh-session`。單獨下載並顯示公告可執行 `ntu-cool-materials announcements --course-id 57544 --refresh-session --print`。
+- 使用自訂 Canvas 網址時，先用 `ntu-cool-session --base-url https://你的Canvas網域 --headers-file 路徑` 匯出該網域專用的登入檔，再用同一個網址與登入檔執行下載。
 
 </details>
 
@@ -149,5 +157,5 @@ macOS 請用 `python3`。開發筆記見 [CLAUDE.md](CLAUDE.md)。
    - 下載所得之講義、投影片、頁面文字與影音內容，其著作權仍歸原授課教師、學校或原權利人所有。**僅限修課學生個人學習與複習使用**，禁止公開轉載、上傳網路、商業利用或散布予未經授權之第三方。
    - 若啟用選用之 NotebookLM 匯入功能（透過非官方個人版介面運作），請確認僅上傳你有權傳輸至第三方服務之教材，並自行遵守學校規定與 Google 服務條款。
 4. **帳號安全與本機憑證隱私**
-   - 台大帳號密碼僅由使用者親自輸入於工具開啟之 NTU COOL 官方登入頁，本程式不讀取、不側錄、不儲存亦不回傳密碼。
+   - Windows 使用者可執行 `ntu-cool-session --remember-login` 設定或更新自己的臺大帳密。工具會建立個人資料夾 `~/.ntu-cool-gcm/credentials/`，以 Windows 使用者層級 DPAPI 加密保存。需要重新登入時，工具會在臺大官方 ADFS 頁面嘗試送出一次。執行 `ntu-cool-session --forget-login` 可刪除儲存的帳密；既有登入工作階段仍有效。未啟用者照常手動登入。
    - 登入後之工作階段憑證與 cookie 僅存於本機 `~/.ntu-cool-gcm/.secrets/`（若目前目錄已有 `.secrets/` 則沿用），不會傳送至開發者或任何第三方伺服器。該資料夾等同於你的登入狀態，**切勿上傳至 GitHub、雲端硬碟或分享給他人**。

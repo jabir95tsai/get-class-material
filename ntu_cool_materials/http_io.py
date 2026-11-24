@@ -12,6 +12,7 @@ import urllib.request
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 
+from .canvas_errors import SessionExpiredError
 from .storage import atomic_write_text
 
 
@@ -55,8 +56,6 @@ def retry_delay(attempt: int, headers=None) -> float:
 
 def open_url(url: str, headers_for_url, *, timeout=60, api_origin=None, extra_headers=None):
     """One GET attempt; each redirect receives freshly scoped credentials."""
-    from .canvas_client import SessionExpiredError
-
     opener = urllib.request.build_opener(NoRedirectHandler)
     current = url
     for _ in range(10):
@@ -83,8 +82,6 @@ def open_url(url: str, headers_for_url, *, timeout=60, api_origin=None, extra_he
 
 
 def request_json(url: str, headers_for_url, *, timeout=30, api_origin=None, attempts=3):
-    from .canvas_client import SessionExpiredError
-
     for attempt in range(attempts):
         try:
             with open_url(url, headers_for_url, timeout=timeout, api_origin=api_origin) as response:
@@ -143,7 +140,6 @@ def stream_response(response, target: Path, *, offset=0, expected_size=None, pro
         raise DownloadError("Partial file changed during download")
     content_type = response.headers.get("Content-Type", "").split(";", 1)[0].lower()
     if content_type in {"text/html", "application/xhtml+xml"} and target.suffix.lower() not in {".html", ".htm"}:
-        from .canvas_client import SessionExpiredError
         raise SessionExpiredError("Download returned HTML; refresh login before retrying")
     written = 0
     with part.open("ab" if offset else "wb") as output:

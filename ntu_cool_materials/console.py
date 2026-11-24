@@ -4,6 +4,19 @@ from __future__ import annotations
 import os
 import sys
 
+from .i18n import t
+
+
+def choose(prompt: str, choices: set[str], default: str) -> str:
+    while True:
+        try:
+            value = input(prompt).strip().lower() or default
+        except (EOFError, KeyboardInterrupt):
+            return "q"
+        if value in choices or value == "q":
+            return value
+        print(t("請輸入列出的選項，或 q 取消。", "Enter one of the listed options, or q to cancel."))
+
 
 def stdin_is_interactive() -> bool:
     """True only for a real terminal.

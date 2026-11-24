@@ -9,14 +9,10 @@ Public API used by `cli.download-course`:
 
 Completed artifacts are identified by source ID and verified against a persistent manifest.
 
-Why a single `capture_and_download_cool_videos`: NTU SAML session cookies on
-cool.ntu.edu.tw are session-only (die when the Chromium process exits), so the
-LTI launches must happen inside a Playwright context that carries that login.
-The function opens one invisible persistent context, re-injects the cookies
-saved at login (`ntu_cool_storage_state.json` next to the headers file), and
-only falls back to a visible SSO window if that saved login has expired. It
-then walks every cool-video module item and downloads the transcoded.mp4 from
-the captured /api/.../view JSON's altSourceUri.
+The cool-video stage reuses an available course browser. Otherwise it probes
+with saved cookies in a headless context and can open a visible SSO window
+if that probe fails. Pending videos use the captured view response to select
+a signed media URL or a YouTube source.
 """
 from __future__ import annotations
 
@@ -27,6 +23,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -37,14 +34,18 @@ from typing import Any
 
 from .browser_session import launch_persistent_context
 from .announcements import (
-    ANNOUNCEMENTS_JSON, canvas_file_links, html_to_markdown, migrate_legacy_announcements_json, write_announcements,
+    ANNOUNCEMENTS_JSON, announcements_markdown, canvas_file_links, html_to_markdown, migrate_legacy_announcements_json, write_announcements,
 )
-from .canvas_client import CanvasAPIError, SessionExpiredError
+from .canvas_client import CanvasAPIError, SessionExpiredError, is_downloadable_course_file
 from .i18n import t
-from .media_naming import build_video_title_map, extract_youtube_ids, sanitize_teacher_title
-from .session_client import DROP_REQUEST_HEADER_NAMES, CanvasSessionClient
-from .spreadsheet_convert import convert_spreadsheets
+from .core.naming import (
+    _file_item_target_name, _module_label, build_video_title_map, extract_youtube_ids, sanitize_teacher_title,
+)
+from .session_client import DEFAULT_BASE_URL, DROP_REQUEST_HEADER_NAMES, SESSION_ORIGIN_HEADER, CanvasSessionClient, read_headers_file
+from .session_paths import secrets_dir, storage_state_path
+from .spreadsheet_convert import SPREADSHEET_TYPES, convert_spreadsheets, markdown_path_for
 from .storage import ManifestStore, atomic_write_text, course_directory_name, hide_dot_entries
+from .youtube_files import place_cached_video, youtube_cache_dir
 from .update_check import yt_dlp_command
 from .http_io import DownloadError, download as download_http, origin
 from . import console
@@ -88,6 +89,8 @@ class CoursePlan:
     verify_files: bool = False
     workers: int = 3
     file_metadata: dict[str, dict[str, Any]] = field(default_factory=dict)
+    linked_file_ids: set[str] = field(default_factory=set)
+    course_files: WeekPlan | None = None
 
 
 @dataclass
@@ -128,13 +131,13 @@ def save_announcements(plan: CoursePlan, client: CanvasSessionClient) -> StageSt
         if has_existing_files:
             try:
                 data = json.loads(json_path.read_text(encoding="utf-8"))
-                if isinstance(data, list):
-                    for idx, item in enumerate(data):
-                        if isinstance(item, dict):
-                            key = str(item.get("id")) if item.get("id") is not None else f"idx_{idx}"
-                            existing_posts[key] = item
-            except Exception:
-                existing_posts = {}
+                if not isinstance(data, list):
+                    raise ValueError("Invalid announcement snapshot")
+                for idx, item in enumerate(data):
+                    if isinstance(item, dict):
+                        key = str(item.get("id")) if item.get("id") is not None else f"idx_{idx}"
+                        existing_posts[key] = item
+            except (OSError, ValueError):
                 has_existing_files = False
 
         if not has_existing_files:
@@ -165,6 +168,13 @@ def save_announcements(plan: CoursePlan, client: CanvasSessionClient) -> StageSt
                 stats.done = new_or_updated
                 stats.skipped = unchanged
             else:
+                expected_markdown = announcements_markdown(announcements)
+                try:
+                    saved_markdown = markdown_path.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    saved_markdown = None
+                if saved_markdown != expected_markdown:
+                    atomic_write_text(markdown_path, expected_markdown)
                 stats.done = 0
                 stats.skipped = unchanged
         for post in announcements:
@@ -184,7 +194,7 @@ def save_announcements(plan: CoursePlan, client: CanvasSessionClient) -> StageSt
 # ---- planning ----
 
 def plan_course(client: CanvasSessionClient, course_id: str, output_dir: Path) -> CoursePlan:
-    """Fetch complete module items and reserve stable per-module directories."""
+    """Fetch modules, reserve on-disk paths and migrate legacy week layouts."""
     course = client.get_course(course_id)
     modules = list(client.list_paginated(
         f"/api/v1/courses/{urllib.parse.quote(str(course_id), safe='')}/modules",
@@ -212,17 +222,17 @@ def plan_course(client: CanvasSessionClient, course_id: str, output_dir: Path) -
             week_dir = store.artifact_path(f"module:{module.get('id', index)}", course_dir, label)
         label = week_dir.name
         week_dir.mkdir(parents=True, exist_ok=True)
-        # Migrate any leftover legacy subfolders (files/ pages/ videos/ metadata/).
+        # Flatten the old per-type layout before reserving individual file paths.
         _migrate_legacy_subfolders(week_dir)
         plan.weeks.append(WeekPlan(label=label, module=module, week_dir=week_dir))
     return plan
 
 
 def _migrate_legacy_subfolders(week_dir: Path) -> None:
-    """One-shot: pull any files out of legacy files/ pages/ videos/ subfolders into week_dir
-    and remove the legacy metadata/ subfolder (no longer used).
+    """Move files from legacy files/, pages/ and videos/ directly into week_dir.
 
-    Conservative on collisions: won't overwrite existing destinations.
+    Leave colliding files at their original paths. Preserve metadata/ because
+    it may contain the only remaining source-to-file mapping.
     """
     import shutil
     for subname in ("files", "pages", "videos"):
@@ -242,16 +252,6 @@ def _migrate_legacy_subfolders(week_dir: Path) -> None:
             sub.rmdir()
         except OSError:
             pass  # not empty (some files left due to collisions)
-    # Keep legacy metadata: it may be the only surviving source-to-file mapping.
-
-
-def _module_label(module: dict[str, Any], index: int) -> str:
-    """Pick a directory label like 'week3' from the module name."""
-    name = str(module.get("name") or "")
-    m = re.search(r"week\s*(\d+)", name, re.IGNORECASE)
-    if m:
-        return f"week{int(m.group(1))}"
-    return f"module{index}"
 
 
 # ---- HTTP helpers (session-cookie auth, cross-origin safe) ----
@@ -300,12 +300,13 @@ def _artifact_key(week: WeekPlan, kind: str, source_id) -> str:
     return f"{week.module.get('id', week.label)}:{kind}:{source_id}"
 
 
-def _version(info: dict[str, Any]) -> str:
-    return json.dumps([info.get("updated_at"), info.get("modified_at"), info.get("size")])
+def _canvas_file_version(info: dict[str, Any]) -> str:
+    # Older manifests could stamp this version without ever fetching the bytes.
+    return json.dumps(["downloaded", info.get("updated_at"), info.get("modified_at"), info.get("size")])
 
 
 def _adopt_legacy(store: ManifestStore, key: str, target: Path, version, valid) -> bool:
-    """Record a file left by a pre-manifest release instead of downloading it again."""
+    """Record a valid existing file when its reserved manifest row lacks a size."""
     row = store.artifact(key)
     if row is None or row["size"] is not None or not target.is_file() or not valid(target):
         return False
@@ -316,6 +317,7 @@ def _adopt_legacy(store: ManifestStore, key: str, target: Path, version, valid) 
 def _download_linked_files(plan, client, directory, links):
     if not links:
         return StageStats()
+    plan.linked_file_ids.update(links)
     items = [{"id": fid, "content_id": fid, "type": "File", "title": title, "_attachment": True}
              for fid, title in links.items()]
     week = WeekPlan(str(directory.resolve().relative_to(plan.course_dir.resolve())), {"items": items}, directory)
@@ -326,47 +328,88 @@ def _download_linked_files(plan, client, directory, links):
 
 # ---- per-stage workers ----
 
-_KNOWN_FILE_EXTS = {
-    ".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".csv",
-    ".zip", ".rar", ".7z", ".tar", ".gz",
-    ".txt", ".md", ".rtf",
-    ".jpg", ".jpeg", ".png", ".gif", ".bmp",
-    ".mp3", ".wav", ".m4a",
-    ".mp4", ".mov", ".avi", ".mkv",
-}
+def _unlisted_course_files(plan: CoursePlan, client: CanvasSessionClient, stats: StageStats) -> WeekPlan | None:
+    seen = plan.linked_file_ids | {
+        str(item["content_id"]) for week in plan.weeks for item in week.items
+        if item.get("type") == "File" and item.get("content_id")
+    }
+    try:
+        files = client.list_course_files(plan.course_id)
+    except SessionExpiredError:
+        raise
+    except (CanvasAPIError, DownloadError, OSError, ValueError) as exc:
+        stats.failed.append(t(f"課程檔案清單：{exc}", f"Course file listing: {exc}"))
+        return None
 
-def _file_item_real_ext(item: dict[str, Any]) -> str:
-    """Best-effort original extension for a Canvas File module item."""
-    title = str(item.get("title") or "").strip()
-    content_details = item.get("content_details") or {}
-    display_name = str(content_details.get("display_name") or content_details.get("filename") or "")
-    real_ext = Path(display_name).suffix.lower() if display_name else ""
-    if not real_ext:
-        real_ext = Path(title).suffix.lower()
-    return real_ext
+    items = []
+    for info in files:
+        fid = str(info.get("id") or "")
+        if not fid:
+            stats.failed.append(t("課程檔案缺少 ID。", "A course file has no ID."))
+            continue
+        if fid in seen:
+            continue
+        seen.add(fid)
+        if not is_downloadable_course_file(info):
+            stats.skipped += 1
+            continue
+        plan.file_metadata[fid] = info
+        title = info.get("display_name") or info.get("filename") or f"file-{fid}"
+        items.append({"type": "File", "content_id": fid, "title": title})
+    if items:
+        module = {"id": "course-files", "name": t("課程檔案", "Course files"), "items": items}
+        return WeekPlan("files", module, plan.course_dir / "files")
+    return None
 
 
-def _file_item_target_name(item: dict[str, Any]) -> str:
-    """Keep the real file extension; fall back to .pdf only when Canvas has none."""
-    title = str(item.get("title") or "").strip() or f"item-{item.get('id')}"
-    real_ext = _file_item_real_ext(item)
-    use_ext = real_ext or ".pdf"
-    title_ext = Path(title).suffix.lower()
-    stem = title[:-len(title_ext)] if title_ext and (title_ext == real_ext or title_ext in _KNOWN_FILE_EXTS) else title
-    safe_title = sanitize_teacher_title(stem)
-    return f"{safe_title}{use_ext}"
+def _reuse_files_copy(store, course_dir, fid, key, target, version):
+    old_key = f"course-files:file:{fid}"
+    row = store.artifact(old_key)
+    if row is None:
+        return None
+    old = Path(row["path"])
+    if old.resolve().parent != course_dir / "files" or old == target or old.is_symlink() or not old.is_file():
+        return None
+    if not target.exists() and store.artifact_current(old_key, old, version, verify_hash=True):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=target.parent) as stage:
+            staged = Path(stage) / target.name
+            shutil.copyfile(old, staged)
+            staged.replace(target)
+        store.record_artifact(key, target, version)
+    return old
 
 
-def download_files(plan: CoursePlan, client: CanvasSessionClient) -> StageStats:
+def _retire_files_copy(store, fid, path):
+    """Keep the prior copy recoverable, outside the active material scan."""
+    row = store.artifact(f"course-files:file:{fid}")
+    if not store.artifact_current(row["key"], path, row["version"], verify_hash=True):
+        return
+    archive = path.parent.parent / ".previous-course-files"
+    archive.mkdir(exist_ok=True)
+    saved = Path(tempfile.mkdtemp(dir=archive))
+    if path.suffix.lower() in SPREADSHEET_TYPES:
+        sidecar = markdown_path_for(path)
+        if sidecar.is_file() and not store.has_artifact_path(sidecar):
+            sidecar.rename(saved / sidecar.name)
+    path.rename(saved / path.name)
+
+
+def download_files(plan: CoursePlan, client: CanvasSessionClient, *, only_unlisted: bool = False) -> StageStats:
     """Refresh metadata, reserve unique paths, and transfer missing/changed files."""
     headers = _session_headers(client)
     stats = StageStats()
     jobs = []
+    previous_files = {}
     base_url = getattr(client, "base_url", f"https://{CANVAS_NETLOC}")
     if not isinstance(base_url, str):
         base_url = f"https://{CANVAS_NETLOC}"
+    weeks = plan.weeks
+    if only_unlisted:
+        plan.course_files = _unlisted_course_files(plan, client, stats)
+        weeks = [plan.course_files] if plan.course_files else []
     with _manifest(plan) as store:
-        for week in plan.weeks:
+        for week in weeks:
             for item in week.items:
                 if item.get("type") != "File":
                     continue
@@ -385,13 +428,16 @@ def download_files(plan: CoursePlan, client: CanvasSessionClient) -> StageStats:
                     if item.get("_attachment"):
                         item["title"] = info.get("display_name") or info.get("filename") or item["title"]
                     key = _artifact_key(week, "file", fid)
-                    target = store.artifact_path(key, week.week_dir, _file_item_target_name(item))
+                    default_extension = "" if week is plan.course_files else ".pdf"
+                    target = store.artifact_path(key, week.week_dir, _file_item_target_name(item, default_extension=default_extension))
                     item["_local_path"] = str(target)
-                    version = _version(info)
+                    version = _canvas_file_version(info)
                     size = int(info["size"]) if info.get("size") is not None else None
-                    if (store.artifact_current(key, target, version, verify_hash=plan.verify_files)
-                            or _adopt_legacy(store, key, target, version,
-                                             lambda p: p.stat().st_size == size if size is not None else p.stat().st_size > 0)):
+                    if not only_unlisted and not item.get("_attachment"):
+                        old = _reuse_files_copy(store, plan.course_dir, fid, key, target, version)
+                        if old:
+                            previous_files[key] = (fid, old, target, version)
+                    if store.artifact_current(key, target, version, verify_hash=plan.verify_files):
                         stats.skipped += 1
                         continue
                     jobs.append((key, fid, target, version, size))
@@ -425,6 +471,12 @@ def download_files(plan: CoursePlan, client: CanvasSessionClient) -> StageStats:
             if expired:
                 expired.stage_stats = stats
                 raise expired
+        for key, (fid, old, target, version) in previous_files.items():
+            if old.is_file() and store.artifact_current(key, target, version, verify_hash=True):
+                try:
+                    _retire_files_copy(store, fid, old)
+                except OSError as exc:
+                    stats.failed.append(f"{old.name}: {exc}")
     return stats
 
 
@@ -479,10 +531,8 @@ def _youtube_cookie_args(cookies_path: Path, cookies_from_browser: str | None) -
     return []
 
 
-# yt-dlp --cookies-from-browser names mapped to the profile dir that proves
-# the browser is installed. Detecting by profile-dir existence keeps us from
-# invoking yt-dlp against browsers that aren't there (which only prints scary
-# errors). Order = the sequence we try them in on a retry.
+# A profile directory marks a candidate for yt-dlp's browser-cookie retry.
+# Candidate order determines retry order.
 def _cookie_browser_candidates() -> list[tuple[str, Path]]:
     import platform
 
@@ -538,24 +588,11 @@ def maybe_retry_youtube_with_login(
     cookies_path: Path, failed_count: int,
     *, interactive: bool = True, input_fn=None,
 ) -> bool:
-    """Post-failure prompt: yt-dlp couldn't grab `failed_count` videos and we
-    have no cookies. Ask once whether to retry using the YouTube login from
-    the user's normal browser. Returns True iff the user consents — the caller
-    then loops `_installed_cookie_browsers()` passing --cookies-from-browser.
+    """Ask for consent to retry failed videos using the user's browser cookies.
 
-    Why browser cookies instead of opening a login window: Google blocks
-    sign-in on automation-controlled browsers ('this browser may not be
-    secure'), so a Playwright login almost always fails. Reading cookies from
-    the browser the user already uses sidesteps that entirely.
-
-    No-op (returns False, no prompt) when:
-      - cookies.txt already exists (failures aren't auth-related)
-      - failed_count == 0 (nothing to retry)
-      - interactive=False (batch / CI callers)
-      - stdin isn't a TTY (piped scripts)
-
-    The upfront "want to log in just in case?" prompt was removed entirely:
-    most courses are public, so the common path is now zero prompts.
+    An existing cookies path, no failures or interactive=False skips the offer.
+    The default input function also requires interactive stdin. The caller uses
+    yt-dlp's browser-cookie support after consent.
     """
     if cookies_path.exists():
         return False
@@ -605,15 +642,14 @@ def download_youtube(
     plan: CoursePlan, *, cookies_path: Path, yt_dlp: str = "yt-dlp",
     cookies_from_browser: str | None = None,
 ) -> StageStats:
-    """For each week with YouTube items, run yt-dlp into the week dir then rename.
+    """Batch missing YouTube IDs in the course cache, then link or copy to week paths.
 
-    Auth: a cookies.txt at `cookies_path` wins; else, if `cookies_from_browser`
-    is set (a yt-dlp browser name), yt-dlp reads the YouTube login live from
-    that browser; else the download is attempted as public/unlisted.
+    An existing cookies file takes precedence over the optional browser login.
+    With neither, yt-dlp attempts public access.
     """
     import tempfile
     stats = StageStats()
-    cache = plan.course_dir / ".media-cache" / "youtube"
+    cache = youtube_cache_dir(plan.course_dir)
     jobs = {}
     existing = {}
     with _manifest(plan) as store:
@@ -705,16 +741,8 @@ def download_youtube(
             copied, placed_all = False, True
             for key, target in destinations:
                 try:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    part = target.with_name(target.name + ".part")
-                    part.unlink(missing_ok=True)
-                    try:
-                        # The cache shares the course volume: a hard link avoids a second copy.
-                        os.link(source, part)
-                    except OSError:
-                        shutil.copyfile(source, part)
+                    if place_cached_video(source, target):
                         copied = True
-                    part.replace(target)
                     store.record_artifact(key, target, vid)
                     stats.done += 1
                 except OSError as exc:
@@ -746,7 +774,7 @@ def _valid_video(path: Path) -> bool:
 
 def _course_page(url: str) -> bool:
     path = urllib.parse.urlsplit(url).path
-    return origin(url) == origin(f"https://{CANVAS_NETLOC}") and (path == "/courses" or path.startswith("/courses/"))
+    return origin(url) == origin(DEFAULT_BASE_URL) and (path == "/courses" or path.startswith("/courses/"))
 
 
 def _maintenance_page(url: str) -> bool:
@@ -772,18 +800,17 @@ def _ensure_logged_in(page, course_id: str | None, sso_timeout_sec: int) -> bool
     try:
         page.goto(target, wait_until="commit", timeout=60000)
     except PWTimeout:
-        # The navigation didn't even commit in 60s — either the network
-        # is down, or NTU's gateway is completely unreachable. But if
-        # we landed somewhere recognizable (a login page mid-redirect),
-        # let the wait_for_url loop below take over. Only bail if the
-        # page object literally has no URL to work with.
+        # A redirect can still finish after this timeout. An empty URL or
+        # about:blank means there is no committed page to wait on.
         if not page.url or page.url == "about:blank":
             print("    無法連到 NTU COOL — 請檢查網路或稍後再試")
             return False
         print(f"    導向尚未完成,進入登入等待 ({page.url})")
 
     if not (_course_page(page.url) or _maintenance_page(page.url)):
-        print(f"    需要登入 — 請在開啟的瀏覽器視窗完成 NTU SSO (最多等 {sso_timeout_sec} 秒)")
+        from .ntu_credentials import try_saved_login
+        if not try_saved_login(page):
+            print(f"    需要登入 — 請在開啟的瀏覽器視窗完成 NTU SSO (最多等 {sso_timeout_sec} 秒)")
         try:
             page.wait_for_url(lambda u: _course_page(u) or _maintenance_page(u),
                               timeout=sso_timeout_sec * 1000)
@@ -831,7 +858,9 @@ def open_browser_session(
         from playwright.sync_api import sync_playwright as _sp
     except ImportError as exc:
         raise RuntimeError(
-            "Playwright is required. Install with: pip install -e \".[browser]\" && python -m playwright install chromium"
+            "Playwright is required. From the project root, run:\n"
+            f"  {console.python_cmd()} -m pip install -e .\n"
+            f"  {console.python_cmd()} -m playwright install chromium"
         ) from exc
 
     profile_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -858,31 +887,27 @@ def _dump_cookies_to_headers_file(context, headers_path: Path) -> bool:
     if not pairs:
         return False
     headers_path.parent.mkdir(parents=True, exist_ok=True)
-    headers_path.write_text(
+    atomic_write_text(headers_path,
         "\n".join([
+            f"{SESSION_ORIGIN_HEADER}: {DEFAULT_BASE_URL}",
             "accept: application/json, text/plain, */*",
             f"cookie: {'; '.join(pairs)}",
             f"referer: https://{CANVAS_NETLOC}/",
             "user-agent: ntu-cool-materials/0.1",
         ]) + "\n",
-        encoding="utf-8",
     )
     # The full cookie jar (with domain/path/secure, plus the NTU SSO cookies)
     # lets a later, invisible Chromium resume this login: Canvas session
     # cookies don't survive the browser exiting, even in a persistent profile.
     try:
-        atomic_write_text(_storage_state_path(headers_path), json.dumps({"cookies": context.cookies()}))
+        atomic_write_text(storage_state_path(headers_path),
+                          json.dumps({"origin": DEFAULT_BASE_URL, "cookies": context.cookies()}))
     except (OSError, TypeError, ValueError):
         pass
     return True
 
 
-STORAGE_STATE_NAME = "ntu_cool_storage_state.json"
 _COOKIE_KEYS = ("name", "value", "domain", "path", "expires", "httpOnly", "secure", "sameSite")
-
-
-def _storage_state_path(headers_path: Path) -> Path:
-    return headers_path.with_name(STORAGE_STATE_NAME)
 
 
 def _saved_login_cookies(headers_path: Path) -> list[dict[str, Any]]:
@@ -891,18 +916,17 @@ def _saved_login_cookies(headers_path: Path) -> list[dict[str, Any]]:
     Prefers the saved cookie jar; falls back to the headers file's `cookie:`
     line (written by older versions and by `ntu-cool-session`)."""
     try:
-        saved = json.loads(_storage_state_path(headers_path).read_text(encoding="utf-8")).get("cookies")
-        cookies = [{k: c[k] for k in _COOKIE_KEYS if k in c} for c in saved
-                   if isinstance(c, dict) and c.get("name") and c.get("domain")]
-        if cookies:
-            return cookies
-    except (OSError, ValueError, AttributeError, TypeError):
-        pass
-    from .session_client import read_headers_file
-    try:
         headers = read_headers_file(headers_path)
     except (OSError, ValueError):
         return []
+    try:
+        saved = json.loads(storage_state_path(headers_path).read_text(encoding="utf-8"))
+        cookies = [{k: c[k] for k in _COOKIE_KEYS if k in c} for c in saved.get("cookies", [])
+                   if isinstance(c, dict) and c.get("name") and c.get("domain")]
+        if cookies and origin(saved.get("origin", DEFAULT_BASE_URL)) == origin(DEFAULT_BASE_URL):
+            return cookies
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
     header = next((v for k, v in headers.items() if k.lower() == "cookie"), "")
     cookies = []
     for part in header.split(";"):
@@ -1013,7 +1037,7 @@ def _download_youtube_backed_video(plan: CoursePlan, youtube_id: str, target: Pa
     watch page, no altSourceUri); fetching that URL returns YouTube's HTML."""
     if not _tool_usable("ffmpeg"):
         raise DownloadError("ffmpeg is required to merge YouTube video and audio")
-    cache = plan.course_dir / ".media-cache" / "youtube"
+    cache = youtube_cache_dir(plan.course_dir)
     cache.mkdir(parents=True, exist_ok=True)
     source = cache / f"{youtube_id}.mp4"
     if not _valid_video(source):
@@ -1030,14 +1054,7 @@ def _download_youtube_backed_video(plan: CoursePlan, youtube_id: str, target: Pa
             raise DownloadError(f"YouTube downloader: {type(exc).__name__}") from None
         if not _valid_video(source):
             raise DownloadError(f"YouTube {youtube_id}: no complete playable MP4")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    part = target.with_name(target.name + ".part")
-    part.unlink(missing_ok=True)
-    try:
-        os.link(source, part)
-    except OSError:
-        shutil.copyfile(source, part)
-    part.replace(target)
+    place_cached_video(source, target)
 
 
 def capture_and_download_cool_videos_in_page(plan: CoursePlan, page, captured: dict[int, dict[str, Any]],
@@ -1142,11 +1159,12 @@ def capture_and_download_cool_videos(
     yt_dlp: str = "yt-dlp",
     yt_cookies: Path | None = None,
 ) -> StageStats:
-    """Standalone entry point: open a Playwright context, log in, capture+download every cool-video.
+    """Capture pending videos in a headless context using the saved login.
 
-    Runs invisibly on the saved login from `headers_path` when it is still
-    valid; a visible SSO window opens only if it has expired (never with
-    `headless`). The refreshed cookies are saved back for the next course."""
+    If the course probe fails, close that context and retry in a visible SSO
+    window unless headless was requested. Save cookies after capture when a
+    headers path was supplied.
+    """
     stats = StageStats()
     pending, stats.skipped = _pending_cool_videos(plan)
     if not pending:
@@ -1155,7 +1173,9 @@ def capture_and_download_cool_videos(
         from playwright.sync_api import sync_playwright
     except ImportError:
         stats.failed.extend(f"{job[4].name}: Playwright is required" for job in pending)
-        print("    沒有安裝 Playwright。請執行: pip install -e \".[browser]\" 之後 python -m playwright install chromium")
+        print("    缺少 Playwright。請在專案根目錄依序執行：\n"
+              f"      {console.python_cmd()} -m pip install -e .\n"
+              f"      {console.python_cmd()} -m playwright install chromium")
         return stats
     profile_dir.parent.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as p:
@@ -1196,13 +1216,11 @@ def capture_and_download_cool_videos(
 # ---- top-level orchestrator ----
 
 def _build_session_client_from_file(headers_path: Path, base_url: str) -> CanvasSessionClient:
-    from .session_client import read_headers_file
-    return CanvasSessionClient(base_url=base_url, headers=read_headers_file(headers_path))
+    return CanvasSessionClient(base_url=base_url, headers=read_headers_file(headers_path, base_url=base_url))
 
 
 def _write_course_overview(plan: CoursePlan) -> Path:
-    """Write a Markdown index at the course root listing every downloaded artifact per week.
-    Designed to be readable by both humans and AI tools."""
+    """Index course items by module, including local paths and external links."""
     from datetime import datetime, timezone
     course_name = plan.course.get("name") or plan.course.get("course_code") or plan.course_id
     lines: list[str] = [
@@ -1212,12 +1230,13 @@ def _write_course_overview(plan: CoursePlan) -> Path:
         f"**產生時間:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
         f"**路徑:** `{plan.course_dir}`",
         "",
-        "課程教材總覽。每週的 PDF / Page / 影片都列在下方並連到本機檔案。",
+        "課程教材總覽。單元與課程檔案列在下方，並連到本機檔案。",
         "",
     ]
     if (plan.course_dir / "announcements" / "announcements.md").exists():
         lines.extend(["## 公告", "", "- [公告全文](announcements/announcements.md)", ""])
-    for week in plan.weeks:
+    sections = plan.weeks + ([plan.course_files] if plan.course_files else [])
+    for week in sections:
         module_name = week.module.get("name") or week.label
         lines.append(f"## {module_name}")
         lines.append("")
@@ -1276,14 +1295,18 @@ def download_course(
     sso_timeout_sec: int = 600,
     verify_files: bool = False, workers: int = 3,
 ) -> CoursePlan:
-    """Top-level orchestrator. Opens at most ONE Playwright context for the entire run.
+    """Download course materials using the saved headers or a refreshed session.
 
-    Pass `browser` (e.g. from `pick`) to reuse an already-opened logged-in context — no second SSO.
-    Otherwise: opens its own context if `refresh_session` or any cool-video items exist.
+    A supplied browser is reused. Refresh or recovery can open a browser owned
+    by this run. Without an open browser, the cool-video stage manages its own
+    headless probe and optional visible login.
     """
     owns_browser = False
+    native_origin = origin(base_url) == origin(DEFAULT_BASE_URL)
     try:
         if browser is None and refresh_session:
+            if not native_origin:
+                raise RuntimeError("For a custom Canvas origin, refresh login with ntu-cool-session.")
             browser = open_browser_session(
                 profile_dir=profile_dir, headless=headless,
                 course_id=course_id, sso_timeout_sec=sso_timeout_sec,
@@ -1299,11 +1322,11 @@ def download_course(
         course_stats = CourseStats()
 
         def _try_recover_session() -> bool:
-            """Refresh SSO + cookies if we have a Playwright session. Returns True on success."""
+            """Recover the native Canvas session in visible mode, opening SSO if needed."""
             nonlocal client, browser, owns_browser
             # A headless browser can't show the SSO page, so "waiting for the
             # user to log in" would just hang for sso_timeout_sec.
-            if headless:
+            if headless or not native_origin:
                 return False
             try:
                 if browser is None:
@@ -1381,9 +1404,9 @@ def download_course(
             ))
 
         if not skip_pdfs:
-            print(t("\n[2/5] 教材檔案", "\n[2/5] Files"))
+            print(t("\n[2/5] 單元教材檔案", "\n[2/5] Module files"))
             course_stats.pdfs = _run_with_session_retry(
-                lambda c: download_files(plan, c), t("PDF", "files")
+                lambda c: download_files(plan, c), t("檔案", "files")
             )
             print(t(
                 f"  下載 {course_stats.pdfs.done}、跳過 {course_stats.pdfs.skipped}、失敗 {len(course_stats.pdfs.failed)}",
@@ -1398,6 +1421,14 @@ def download_course(
                 f"  儲存 {course_stats.pages.done}、跳過 {course_stats.pages.skipped}、失敗 {len(course_stats.pages.failed)}",
                 f"  saved {course_stats.pages.done}, skipped {course_stats.pages.skipped}, failed {len(course_stats.pages.failed)}",
             ))
+        if not skip_pdfs:
+            print(t("\n補抓課程「檔案」區", "\nChecking the course Files area"))
+            extra_files = _run_with_session_retry(
+                lambda c: download_files(plan, c, only_unlisted=True), t("課程檔案清單", "course file listing")
+            )
+            course_stats.pdfs.done += extra_files.done
+            course_stats.pdfs.skipped += extra_files.skipped
+            course_stats.pdfs.failed.extend(extra_files.failed)
         if not (skip_pdfs and skip_pages):
             # Files and Page attachments can both bring in Excel workbooks.
             excel = convert_spreadsheets(plan.course_dir)
@@ -1405,8 +1436,7 @@ def download_course(
                 print(t(f"  Excel → Markdown: 轉換 {excel.done}、失敗 {len(excel.failed)}",
                         f"  Excel → Markdown: {excel.done} converted, {len(excel.failed)} failed"))
         if yt_cookies is None:
-            from .cli import _secrets_dir
-            yt_cookies = _secrets_dir() / "youtube_cookies.txt"
+            yt_cookies = secrets_dir() / "youtube_cookies.txt"
         from .update_check import resolve_yt_dlp
         yt_dlp = resolve_yt_dlp(yt_dlp) or yt_dlp
         # Set once the user agrees to the browser-login retry, so the cool-video
@@ -1421,7 +1451,7 @@ def download_course(
                 for week in plan.weeks
                 for item in week.items
             )
-            # None = no update offered yet; True/False = already updated or declined.
+            # None leaves the post-failure update offer available. A bool records a prior outcome.
             yt_dlp_update = None
             if has_youtube_jobs:
                 from .update_check import ensure_yt_dlp_updated
@@ -1430,18 +1460,13 @@ def download_course(
                 except Exception:
                     pass
 
-            # Strategy: just try to download. Most class YouTube content is
-            # public, so most users never need cookies — asking up front
-            # would burn an interaction on every run for no benefit. After
-            # the run, IF anything failed AND we don't have cookies, then
-            # we ask. That way zero-interaction is the common path and the
-            # post-failure prompt can quote a concrete number of failures.
+            # Try the available credentials first so a browser-login offer can
+            # report the number of videos that actually failed.
             course_stats.youtube = download_youtube(
                 plan, cookies_path=yt_cookies_path, yt_dlp=yt_dlp
             )
             failed_count = len(course_stats.youtube.failed)
-            # Without ffmpeg every video fails the same way; neither a newer
-            # yt-dlp nor a YouTube login can fix that, so don't offer them.
+            # A post-failure update or login retry also needs a usable ffmpeg.
             retryable = _tool_usable("ffmpeg")
             if failed_count > 0 and retryable and yt_dlp_update is None:
                 from .update_check import confirm_yt_dlp_update, update_yt_dlp
@@ -1514,7 +1539,7 @@ def download_course(
                 else:
                     course_stats.cool_videos = capture_and_download_cool_videos(
                         plan, course_id=course_id, profile_dir=profile_dir, headless=headless,
-                        sso_timeout_sec=sso_timeout_sec, headers_path=headers_path,
+                        sso_timeout_sec=sso_timeout_sec, headers_path=headers_path if native_origin else None,
                         yt_dlp=yt_dlp, yt_cookies=yt_cookies,
                     )
             except Exception as exc:

@@ -12,6 +12,18 @@ from ntu_cool_materials.storage import (
 
 
 class StorageTests(unittest.TestCase):
+    def test_legacy_skipped_row_is_not_a_download_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            target = root / "file.pdf"
+            target.write_bytes(b"old")
+            info = {"id": 1, "size": 3, "updated_at": "current"}
+            with ManifestStore(root / "manifest.sqlite3") as store:
+                store.upsert_file(file_info=info, course_id="1", course_name="Test", local_path=target,
+                                  sha256=None, skipped_reason="locked")
+                for verify in (False, True):
+                    self.assertTrue(store.needs_download(info, target, verify_hash=verify))
+
     def test_sanitize_component_replaces_unsafe_chars(self) -> None:
         self.assertEqual(sanitize_component('week:1/intro?.pdf'), "week_1_intro_.pdf")
         self.assertEqual(sanitize_component("CON"), "_CON")

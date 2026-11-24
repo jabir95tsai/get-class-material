@@ -5,61 +5,16 @@ import os
 import sqlite3
 import stat
 import tempfile
-import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-
-WINDOWS_RESERVED_NAMES = {
-    "CON",
-    "PRN",
-    "AUX",
-    "NUL",
-    "COM1",
-    "COM2",
-    "COM3",
-    "COM4",
-    "COM5",
-    "COM6",
-    "COM7",
-    "COM8",
-    "COM9",
-    "LPT1",
-    "LPT2",
-    "LPT3",
-    "LPT4",
-    "LPT5",
-    "LPT6",
-    "LPT7",
-    "LPT8",
-    "LPT9",
-}
-
-
-def course_directory_name(course: dict[str, Any]) -> str:
-    """Canonical per-course directory name used by sync, announcements, etc."""
-    course_id = str(course.get("id") or "")
-    name = str(course.get("name") or course.get("course_code") or course_id or "course")
-    return sanitize_component(f"{name} ({course_id})" if course_id else name, max_length=160)
-
-
-def sanitize_component(value: str | None, fallback: str = "untitled", max_length: int = 120) -> str:
-    raw = unicodedata.normalize("NFKC", value or "").strip()
-    cleaned = "".join("_" if _is_unsafe_filename_char(char) else char for char in raw)
-    cleaned = " ".join(cleaned.split()).strip(" .")
-
-    if not cleaned:
-        cleaned = fallback
-
-    if cleaned.upper() in WINDOWS_RESERVED_NAMES:
-        cleaned = f"_{cleaned}"
-
-    if len(cleaned) > max_length:
-        cleaned = cleaned[:max_length].rstrip(" .")
-
-    return cleaned or fallback
+from .core.naming import (
+    WINDOWS_RESERVED_NAMES as WINDOWS_RESERVED_NAMES,
+    course_directory_name as course_directory_name,
+    sanitize_component,
+)
 
 
 def sha256_file(path: Path) -> str:
@@ -125,10 +80,6 @@ def hide_dot_entries(directory: Path) -> None:
             hide_file(entry)
 
 
-def _is_unsafe_filename_char(char: str) -> bool:
-    return ord(char) < 32 or char in '<>:"/\\|?*'
-
-
 @dataclass(frozen=True)
 class StoredFile:
     file_id: str
@@ -179,7 +130,7 @@ class ManifestStore:
             return True
 
         stored = self.get_file(file_id)
-        if stored is None:
+        if stored is None or not stored.sha256:
             return True
 
         updated_at = file_info.get("updated_at")
@@ -188,7 +139,7 @@ class ManifestStore:
             return True
         if not target_path.is_file() or (size is not None and target_path.stat().st_size != size):
             return True
-        return bool(verify_hash and stored.sha256 and sha256_file(target_path) != stored.sha256)
+        return verify_hash and sha256_file(target_path) != stored.sha256
 
     def __enter__(self):
         return self
@@ -198,6 +149,11 @@ class ManifestStore:
 
     def artifact(self, key: str):
         return self._connection.execute("SELECT * FROM artifacts WHERE key = ?", (key,)).fetchone()
+
+    def has_artifact_path(self, path: Path) -> bool:
+        return self._connection.execute(
+            "SELECT 1 FROM artifacts WHERE path_fold = ?", (str(path.resolve()).casefold(),)
+        ).fetchone() is not None
 
     def artifact_path(self, key: str, directory: Path, name: str) -> Path:
         """Reserve a stable, case-insensitive path before any worker writes bytes."""

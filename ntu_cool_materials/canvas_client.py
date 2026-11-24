@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -10,61 +9,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .canvas_errors import CanvasAPIError, SessionExpiredError
+from .canvas_pagination import iter_page_items, parse_link_header as parse_link_header
 from .http_io import NoRedirectHandler, download, request_json, safe_url
 
 
 JSON = dict[str, Any] | list[Any]
 
 
-class CanvasAPIError(RuntimeError):
-    """Raised when Canvas returns an error response.
-
-    `status_code` is the HTTP response code when the error originated from
-    an HTTPError (None for parse / decode failures). Lets callers distinguish
-    between "your session expired" (401) and other failures so they can
-    auto-recover with a fresh login instead of just printing and exiting.
-    """
-
-    def __init__(self, message: str, *, status_code: int | None = None) -> None:
-        super().__init__(message)
-        self.status_code = status_code
-
-
-class SessionExpiredError(CanvasAPIError):
-    """Raised when Canvas returns 401 — the saved login is no longer valid.
-
-    Callers should catch this specifically to trigger a re-authentication
-    flow rather than just bubbling the error up to the user. Subclasses
-    CanvasAPIError so existing `except CanvasAPIError` blocks continue to
-    catch it; `status_code` is fixed at 401.
-    """
-
-    def __init__(self, message: str) -> None:
-        super().__init__(message, status_code=401)
-
-
-def parse_link_header(value: str | None) -> dict[str, str]:
-    if not value:
-        return {}
-
-    links: dict[str, str] = {}
-    for part in value.split(","):
-        sections = [section.strip() for section in part.split(";")]
-        if not sections or not sections[0].startswith("<") or not sections[0].endswith(">"):
-            continue
-
-        url = sections[0][1:-1]
-        rel = None
-        for section in sections[1:]:
-            key, _, raw_value = section.partition("=")
-            if key.strip().lower() == "rel":
-                rel = raw_value.strip().strip('"')
-                break
-
-        if rel:
-            links[rel] = url
-
-    return links
+def is_downloadable_course_file(file_info: dict[str, Any]) -> bool:
+    return bool(file_info.get("url")) and not any(file_info.get(flag) for flag in (
+        "locked", "locked_for_user", "hidden", "hidden_for_user",
+    ))
 
 
 @dataclass
@@ -172,20 +128,7 @@ class CanvasClient:
         path_or_url: str,
         params: Sequence[tuple[str, str]] | None = None,
     ) -> Iterator[dict[str, Any]]:
-        next_url: str | None = self._build_url(path_or_url, params=params)
-
-        while next_url:
-            data, headers = self._request_json(next_url)
-            if not isinstance(data, list):
-                raise CanvasAPIError(f"Expected a list response from {next_url!r}.")
-
-            for item in data:
-                if isinstance(item, dict):
-                    yield item
-
-            next_url = parse_link_header(headers.get("Link")).get("next")
-            if next_url:
-                time.sleep(0.05)
+        yield from iter_page_items(self._build_url(path_or_url, params=params), self._request_json)
 
     def get_json(
         self,

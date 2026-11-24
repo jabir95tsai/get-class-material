@@ -3,6 +3,7 @@ import io
 import os
 import tempfile
 import unittest
+from importlib import import_module
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,7 +11,7 @@ from ntu_cool_materials.notebooklm import build_import_plan
 from ntu_cool_materials.spreadsheet_convert import convert_spreadsheets, markdown_path_for
 
 try:
-    import markitdown  # noqa: F401
+    import_module("markitdown")
     import openpyxl
 except ImportError:
     openpyxl = None

@@ -1,10 +1,4 @@
-"""Tests for cli.py helpers — primarily the UTF-8 stream reconfigure.
-
-`main()` and the cli script entry points call `_force_utf8_streams()` to
-prevent Windows cp1252/cp950 consoles from crashing on ✓/⚠/✗ and CJK
-output. The test simulates a cp1252 stdout, calls the reconfigure helper,
-and verifies the stream now accepts the previously-failing glyphs.
-"""
+"""Tests for the main CLI and picker, including Windows stream handling."""
 from __future__ import annotations
 
 import contextlib
@@ -28,10 +22,22 @@ def _chdir(path: str):
         os.chdir(prev)
 
 
+class OutputDirectoryTests(unittest.TestCase):
+    def test_documents_takes_priority_as_soon_as_its_library_exists(self):
+        with tempfile.TemporaryDirectory() as tmp, _chdir(tmp):
+            local = Path("ntu-cool-gcm_material")
+            documents = Path(tmp) / "Documents"
+            with mock.patch.object(cli, "_default_documents_root", return_value=documents):
+                self.assertEqual(cli._resolve_output_dir(None), documents / local)
+                local.mkdir()
+                self.assertEqual(cli._resolve_output_dir(None), local)
+                (documents / local).mkdir(parents=True)
+                self.assertEqual(cli._resolve_output_dir(None), documents / local)
+                self.assertEqual(cli._resolve_output_dir("custom"), Path("custom"))
+
+
 class VersionTests(unittest.TestCase):
-    """`--version` is the first thing a bug report needs. Guard that it works
-    on all entry points and that it stays pinned to the packaged version
-    (not a hand-edited literal that drifts — the bug this replaced)."""
+    """The main CLI and picker aliases report the installed package version."""
 
     def test_version_string_matches_package_metadata(self) -> None:
         from importlib.metadata import version
@@ -127,7 +133,8 @@ class PickNotebookLMBatchTests(unittest.TestCase):
     COURSES = [{"id": 1, "name": "Alpha"}, {"id": 2, "name": "Beta"}, {"id": 3, "name": "Gamma"}]
 
     def _run_pick(self, answers: list[str]) -> tuple[list[Path], list[str]]:
-        tmp = Path(tempfile.mkdtemp())
+        tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(mock.patch.object(cli, "_secrets_dir", return_value=tmp / ".secrets"))
         headers = tmp / "headers.txt"
         headers.write_text("cookie: x\n", encoding="utf-8")
         args = cli._build_parser().parse_args([
@@ -149,6 +156,7 @@ class PickNotebookLMBatchTests(unittest.TestCase):
             return answers.pop(0)
 
         with mock.patch.object(cli, "ensure_ready", return_value=True), \
+                mock.patch("ntu_cool_materials.ntu_credentials.offer_credentials"), \
                 mock.patch.object(cli, "check_for_update", return_value=None), \
                 mock.patch.object(cli, "auto_update_dependencies"), \
                 mock.patch.object(cli, "CanvasSessionClient", return_value=client), \
@@ -181,6 +189,18 @@ class PickNotebookLMBatchTests(unittest.TestCase):
     def test_single_course_with_failed_item_is_still_offered(self) -> None:
         imported, _ = self._run_pick(["1", "y", "q"])
         self.assertEqual([p.name for p in imported], ["1"])
+
+    def test_invalid_indices_reprompt_and_mixed_separators_preserve_selection_order(self):
+        imported, _ = self._run_pick(["0", "1,4", "-1", "x", "３, 1 ３", "a", "q"])
+        self.assertEqual([p.name for p in imported], ["3", "1"])
+
+    def test_non_decimal_digit_reprompts_before_next_valid_selection(self):
+        imported, _ = self._run_pick(["²", "2", "y", "q"])
+        self.assertEqual([p.name for p in imported], ["2"])
+
+    def test_excessively_long_course_number_reprompts(self):
+        imported, _ = self._run_pick(["9" * 5000, "2", "y", "q"])
+        self.assertEqual([p.name for p in imported], ["2"])
 
 
 class ForceUtf8StreamsTests(unittest.TestCase):
@@ -217,8 +237,7 @@ class ForceUtf8StreamsTests(unittest.TestCase):
             cli._force_utf8_streams()  # should not raise
 
     def test_swallows_reconfigure_errors(self) -> None:
-        """If reconfigure raises (detached stream, closed pipe), we eat the
-        error rather than crash the CLI before it can print its own message."""
+        """A pipe error during stream setup leaves the CLI free to continue."""
         class RaisingStream:
             encoding = "ascii"
             def reconfigure(self, **kwargs):

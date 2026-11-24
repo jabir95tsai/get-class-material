@@ -80,9 +80,9 @@ class PublicFlowTests(unittest.TestCase):
                     self.assertNotIn("slides.xyz", lines)
 
     def test_guide_hashes_each_file_only_once(self):
-        from ntu_cool_materials import notebooklm, notebooklm_api
+        from ntu_cool_materials import notebooklm, notebooklm_api, notebooklm_plan
         with patch("ntu_cool_materials.console.stdin_is_interactive", return_value=True), \
-             patch.object(notebooklm, "sha256_file", wraps=notebooklm.sha256_file) as hashed, \
+             patch.object(notebooklm_plan, "sha256_file", wraps=notebooklm_plan.sha256_file) as hashed, \
              patch.object(notebooklm_api, "NotebookLMAPIAdapter") as adapter, \
              patch.object(notebooklm_api, "import_plan",
                           return_value=notebooklm.ImportResult(notebook_url="https://notebook.google.com/notebook/x")):

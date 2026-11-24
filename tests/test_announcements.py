@@ -11,7 +11,7 @@ from unittest import mock
 from ntu_cool_materials import course_pipeline as pipeline
 from ntu_cool_materials.canvas_client import CanvasAPIError, SessionExpiredError
 from ntu_cool_materials.cli import _build_parser
-from ntu_cool_materials.storage import course_directory_name
+from ntu_cool_materials.storage import atomic_write_text, course_directory_name
 
 from ntu_cool_materials.announcements import announcement_markdown
 
@@ -72,6 +72,36 @@ class AnnouncementPipelineTests(unittest.TestCase):
             with self.assertRaises(SessionExpiredError):
                 pipeline.save_announcements(plan, client)
 
+    def test_rerun_reconciles_markdown_after_interrupted_update(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            course = {"id": 123, "name": "Test"}
+            plan = pipeline.CoursePlan(course, "123", Path(tmp) / course_directory_name(course))
+            target = plan.course_dir / "announcements"
+            markdown = target / "announcements.md"
+            raw = target / ".announcements.json"
+            client = mock.Mock()
+            client.list_course_announcements.return_value = [{"id": 1, "title": "Original"}]
+            pipeline.save_announcements(plan, client)
+            edited = [{"id": 1, "title": "Updated"}]
+            client.list_course_announcements.return_value = edited
+
+            def fail_markdown(path, text):
+                if path == markdown:
+                    raise OSError("simulated interrupted Markdown write")
+                atomic_write_text(path, text)
+
+            with mock.patch("ntu_cool_materials.announcements.atomic_write_text", side_effect=fail_markdown):
+                self.assertTrue(pipeline.save_announcements(plan, client).failed)
+            self.assertIn("Original", markdown.read_text(encoding="utf-8"))
+            self.assertFalse(pipeline.save_announcements(plan, client).failed)
+            self.assertEqual(markdown.read_text(encoding="utf-8"), "## Updated")
+
+            # Repair the divergent pair already left behind by older versions.
+            markdown.write_text("## Original", encoding="utf-8")
+            self.assertEqual(json.loads(raw.read_text(encoding="utf-8")), edited)
+            self.assertFalse(pipeline.save_announcements(plan, client).failed)
+            self.assertEqual(markdown.read_text(encoding="utf-8"), "## Updated")
+
     def test_empty_announcements_saved_and_flags_available(self):
         with tempfile.TemporaryDirectory() as tmp:
             course = {"id": 123}
@@ -92,7 +122,7 @@ class AnnouncementPipelineTests(unittest.TestCase):
             target.mkdir(parents=True)
             posts = [{"id": 1, "title": "T", "message": "M", "updated_at": "2026-01-01"}]
             (target / "announcements.json").write_text(json.dumps(posts), encoding="utf-8")
-            (target / "announcements.md").write_text("saved", encoding="utf-8")
+            (target / "announcements.md").write_text(announcement_markdown(posts[0]), encoding="utf-8")
             client = mock.Mock()
             client.list_course_announcements.return_value = posts
             stats = pipeline.save_announcements(plan, client)

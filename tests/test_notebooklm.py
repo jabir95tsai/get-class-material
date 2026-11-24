@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from ntu_cool_materials import cli
+from ntu_cool_materials.storage import sha256_file
 from ntu_cool_materials.notebooklm import (
     STATE_NAME, NotebookLMError, build_import_plan, import_plan,
     validate_notebook_url,
@@ -23,7 +24,7 @@ OTHER_URL = "https://notebooklm.google.com/notebook/other-notebook"
 
 class FakeAdapter:
     def __init__(self):
-        self.ready = set()
+        self.ready = {}
         self.calls = []
         self.open_calls = []
         self.fail = False
@@ -33,17 +34,23 @@ class FakeAdapter:
         self.open_calls.append((url, title))
         return url or URL
 
-    def ready_titles(self):
+    def ready_sources(self):
         return self.ready.copy()
 
     def source_count(self):
         return len(self.ready) + self.extra_sources
 
-    def upload(self, path, title):
+    def upload(self, path, title, *, on_created):
         self.calls.append((title, path.read_bytes()))
+        source_id = f"source-{len(self.calls)}"
+        on_created(source_id)
         if self.fail:
             raise RuntimeError("private-login-url-must-not-be-shown")
-        self.ready.add(title)
+        self.ready[source_id] = title
+
+    def delete_sources(self, source_ids, *, keep_source_id):
+        for source_id in source_ids:
+            self.ready.pop(source_id, None)
 
 
 class NotebookLMTests(unittest.TestCase):
@@ -107,9 +114,9 @@ class NotebookLMTests(unittest.TestCase):
         original = video.read_bytes()
         limit = len(original) // 2
         adapter = FakeAdapter()
-        with patch("ntu_cool_materials.notebooklm.MAX_FILE_BYTES", limit):
+        with patch("ntu_cool_materials.notebooklm_plan.MAX_FILE_BYTES", limit):
             with contextlib.redirect_stdout(io.StringIO()) as progress, \
-                 patch("ntu_cool_materials.notebooklm.subprocess.run", wraps=subprocess.run) as run:
+                 patch("ntu_cool_materials.notebooklm_plan.subprocess.run", wraps=subprocess.run) as run:
                 plan = build_import_plan(self.root)
             self.assertIn("正在分割 lecture.mp4", progress.getvalue())
             ffmpeg = [call.args[0] for call in run.call_args_list if call.args[0][0] == "ffmpeg"]
@@ -140,8 +147,8 @@ class NotebookLMTests(unittest.TestCase):
             check=True, capture_output=True,
         )
         limit = video.stat().st_size * 2 // 3
-        with patch("ntu_cool_materials.notebooklm.MAX_FILE_BYTES", limit), \
-             patch("ntu_cool_materials.notebooklm.subprocess.run", wraps=subprocess.run) as run:
+        with patch("ntu_cool_materials.notebooklm_plan.MAX_FILE_BYTES", limit), \
+             patch("ntu_cool_materials.notebooklm_plan.subprocess.run", wraps=subprocess.run) as run:
             plan = build_import_plan(self.root)
         self.assertGreaterEqual(len(plan.sources), 2, plan.skipped)
         ffmpeg = [call.args[0] for call in run.call_args_list if call.args[0][0] == "ffmpeg"]
@@ -164,7 +171,7 @@ class NotebookLMTests(unittest.TestCase):
 
     def test_large_files_are_not_hashed_or_uploaded(self):
         self.file(content=b"12345")
-        with patch("ntu_cool_materials.notebooklm.MAX_FILE_BYTES", 4):
+        with patch("ntu_cool_materials.notebooklm_plan.MAX_FILE_BYTES", 4):
             self.assertFalse(build_import_plan(self.root).sources)
 
     def test_bad_urls_rejected_before_browser_use(self):
@@ -174,6 +181,46 @@ class NotebookLMTests(unittest.TestCase):
             with self.subTest(url=url), self.assertRaises(NotebookLMError):
                 validate_notebook_url(url)
         self.assertEqual(validate_notebook_url(URL + "?authuser=0#foo"), URL)
+
+    def test_dry_run_prepares_temporary_video_parts_only_when_media_is_included(self):
+        video = self.file("week1/video.mp4", b"123456789")
+        notes = self.file("notes.md", b"notes")
+        workbook = self.file("grades.xlsx", b"workbook")
+        scratch = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+        def split(source, output, size):
+            self.assertEqual((source, size), (video, 9))
+            self.assertTrue(output.is_relative_to(scratch))
+            parts = [output / "part1.mp4", output / "part2.mp4"]
+            for part in parts:
+                part.write_bytes(b"part")
+            return parts
+
+        for media in (True, False):
+            with (
+                self.subTest(media=media),
+                patch.object(tempfile, "tempdir", str(scratch)),
+                patch("ntu_cool_materials.notebooklm_plan.MAX_FILE_BYTES", 8),
+                patch("ntu_cool_materials.notebooklm_plan._split_video", side_effect=split) as splitter,
+                patch("ntu_cool_materials.notebooklm_plan.sha256_file", wraps=sha256_file) as hash_file,
+                patch("ntu_cool_materials.notebooklm_api.convert_spreadsheets") as convert,
+                patch("ntu_cool_materials.notebooklm_api.NotebookLMAPIAdapter") as api,
+                patch.object(cli, "_secrets_dir", return_value=scratch / ".secrets"),
+                contextlib.redirect_stdout(io.StringIO()) as preview,
+            ):
+                args = ["notebooklm", "--course-dir", str(self.root), "--dry-run"]
+                if not media:
+                    args.append("--notebooklm-no-media")
+                self.assertEqual(cli.main(args), 0)
+                hashed_paths = [call.args[0] for call in hash_file.call_args_list]
+                self.assertIn(notes, hashed_paths)
+                self.assertEqual(video in hashed_paths, media)
+                self.assertEqual(splitter.call_count, int(media))
+                self.assertEqual("week1/video.mp4 (part 2)" in preview.getvalue(), media)
+                api.assert_not_called()
+                convert.assert_not_called()
+                self.assertEqual({p for p in self.root.rglob("*") if p.is_file()}, {video, notes, workbook})
+                self.assertEqual(video.read_bytes(), b"123456789")
 
     def test_dry_run_does_not_create_state_or_connect(self):
         self.file()
@@ -208,7 +255,7 @@ class NotebookLMTests(unittest.TestCase):
             import_plan(plan, browser)
         self.assertEqual(len(browser.calls), 1)
         # The server eventually finished; reconcile without reuploading.
-        browser.ready.add(plan.sources[0].title)
+        browser.ready["source-1"] = plan.sources[0].title
         self.assertEqual(import_plan(plan, browser).unchanged, 1)
         self.assertEqual(len(browser.calls), 1)
 

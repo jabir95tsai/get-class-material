@@ -12,8 +12,8 @@ from ntu_cool_materials import cli
 from ntu_cool_materials.notebooklm import NotebookLMError, STATE_NAME, build_import_plan, import_plan
 from ntu_cool_materials.notebooklm_api import (
     NotebookLMAPIAdapter, run_api_import, resolve_api_storage, remember_api_storage,
-    trigger_interactive_login, api_client_context
 )
+from ntu_cool_materials.storage import atomic_write_text
 
 URL = "https://notebooklm.google.com/notebook/owned"
 STATUS = SimpleNamespace(READY=2, PREPARING=5, PROCESSING=1, ERROR=3)
@@ -83,17 +83,20 @@ class StorageTests(unittest.TestCase):
             login.parent.mkdir()
             login.write_text("synthetic-secret")
             with patch("ntu_cool_materials.notebooklm_api.Path.home", return_value=root), \
-                 patch("ntu_cool_materials.cli._secrets_dir", return_value=root / "elsewhere/.secrets"):
+                 patch("ntu_cool_materials.notebooklm_api.secrets_dir", return_value=root / "elsewhere/.secrets"):
                 remember_api_storage(login)
+                default_login = root / "elsewhere/.secrets/notebooklm-api/profiles/default/storage_state.json"
+                default_login.parent.mkdir(parents=True)
+                default_login.write_text("{}")
                 self.assertEqual(resolve_api_storage(), login)
                 config = root / ".ntu-cool-gcm/notebooklm-storage.json"
                 self.assertNotIn("synthetic-secret", config.read_text())
                 with patch.dict(os.environ, {"NOTEBOOKLM_PROFILE": "other"}):
                     self.assertIsNone(resolve_api_storage())
                 login.unlink()
-                self.assertIsNone(resolve_api_storage())
+                self.assertEqual(resolve_api_storage(), default_login)
                 config.write_text("broken")
-                self.assertIsNone(resolve_api_storage())
+                self.assertEqual(resolve_api_storage(), default_login)
 
     def test_existing_local_login_and_explicit_overrides(self):
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {}, clear=True):
@@ -101,7 +104,8 @@ class StorageTests(unittest.TestCase):
             login = root / ".secrets/notebooklm-api/profiles/default/storage_state.json"
             login.parent.mkdir(parents=True)
             login.write_text("{}")
-            with patch("ntu_cool_materials.cli._secrets_dir", return_value=root / ".secrets"):
+            with patch("ntu_cool_materials.notebooklm_api.secrets_dir", return_value=root / ".secrets"), \
+                 patch("ntu_cool_materials.notebooklm_api.Path.home", return_value=root):
                 self.assertEqual(resolve_api_storage(), login)
                 explicit = root / "explicit.json"
                 self.assertEqual(resolve_api_storage(explicit), explicit)
@@ -113,7 +117,7 @@ class StorageTests(unittest.TestCase):
     def test_home_fallback_and_sdk_default(self):
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {}, clear=True):
             root = Path(folder).resolve()
-            with patch("ntu_cool_materials.cli._secrets_dir", return_value=root / ".ntu-cool-gcm/.secrets"), \
+            with patch("ntu_cool_materials.notebooklm_api.secrets_dir", return_value=root / ".ntu-cool-gcm/.secrets"), \
                  patch("ntu_cool_materials.notebooklm_api.Path.home", return_value=root):
                 self.assertIsNone(resolve_api_storage())
                 login = root / ".ntu-cool-gcm/.secrets/notebooklm-api/profiles/default/storage_state.json"
@@ -163,6 +167,23 @@ class APITests(unittest.TestCase):
         with self.assertRaisesRegex(NotebookLMError, "先前上傳結果不明"):
             self.run_import()
         self.assertEqual(self.api.uploads, 1)
+
+    def test_failed_revision_does_not_match_original_title_in_import_or_verify(self):
+        self.assertEqual(self.run_import().uploaded, 1)
+        (self.root / "lecture.md").write_text("Revised material", encoding="utf-8")
+        self.plan = build_import_plan(self.root)
+        self.api.fail_upload = True
+        with self.assertRaises(NotebookLMError):
+            self.run_import()
+        self.api.fail_upload = False
+        with self.assertRaisesRegex(NotebookLMError, "先前上傳結果不明"):
+            self.run_import()
+        with patch("ntu_cool_materials.notebooklm_api.api_client_context", return_value=self.api):
+            with self.assertRaises(NotebookLMError):
+                run_api_import(self.root, notebook_url=URL, verify_only=True)
+        records = json.loads((self.root / STATE_NAME).read_text())["notebooks"][URL]["sources"]
+        self.assertEqual(records[self.plan.sources[0].digest]["status"], "pending")
+        self.assertEqual(self.api.uploads, 2)
 
     def test_unowned_notebook_refused_before_upload(self):
         with self.adapter() as adapter:
@@ -257,13 +278,73 @@ class APITests(unittest.TestCase):
         self.assertEqual(self.api.uploads, 1)
         self.assertEqual((self.root / STATE_NAME).read_bytes(), before)
 
+    def test_manually_replaced_source_with_same_title_does_not_verify(self):
+        self.run_import()
+        self.api.rows[0].id = "manual"
+        with patch('ntu_cool_materials.notebooklm_api.api_client_context', return_value=self.api):
+            with self.assertRaisesRegex(NotebookLMError, "來源 ID"):
+                run_api_import(self.root, verify_only=True)
+        self.assertEqual(self.api.uploads, 1)
+
+    def test_legacy_complete_record_is_retained_without_claiming_verified(self):
+        self.run_import()
+        journal = self.root / STATE_NAME
+        state = json.loads(journal.read_text())
+        entry = state["notebooks"][URL]["sources"][self.plan.sources[0].digest]
+        entry.pop("source_id")
+        atomic_write_text(journal, json.dumps(state))
+
+        result = self.run_import()
+        self.assertEqual((result.uploaded, result.unchanged, result.unverified), (0, 0, 1))
+        self.assertEqual(self.api.uploads, 1)
+        with patch('ntu_cool_materials.notebooklm_api.api_client_context', return_value=self.api):
+            with self.assertRaisesRegex(NotebookLMError, "來源 ID"):
+                run_api_import(self.root, verify_only=True)
+
+    def test_legacy_id_requires_identical_original_and_is_persisted(self):
+        from unittest.mock import MagicMock
+        self.run_import()
+        journal = self.root / STATE_NAME
+        state = json.loads(journal.read_text())
+        digest = self.plan.sources[0].digest
+        entry = state["notebooks"][URL]["sources"][digest]
+        original_id = entry.pop("source_id")
+        atomic_write_text(journal, json.dumps(state))
+        self.api.rows[0].download_url = "https://contribution.usercontent.google.com/download?id=test"
+        self.api.auth = SimpleNamespace(cookie_jar=None)
+        httpx = MagicMock()
+        response = httpx.Client.return_value.__enter__.return_value.stream.return_value.__enter__.return_value
+        response.status_code = 200
+        data = self.plan.sources[0].path.read_bytes()
+        response.iter_bytes.side_effect = [[b"x" * len(data)], [data]]
+        with patch.dict("sys.modules", {"httpx": httpx}):
+            self.assertEqual(self.run_import().unverified, 1)
+            self.assertEqual(self.run_import().unchanged, 1)
+            self.assertEqual(self.run_import().unchanged, 1)
+        self.assertEqual(response.iter_bytes.call_count, 2)
+        self.assertEqual(self.api.uploads, 1)
+        self.assertEqual(json.loads(journal.read_text())["notebooks"][URL]["sources"][digest]["source_id"], original_id)
+
+    def test_workbook_export_checks_all_cells_and_sheet_names(self):
+        from ntu_cool_materials.notebooklm_api import _workbook_export
+        path = self.root / "week2" / "prices.xlsx.md"
+        path.parent.mkdir()
+        path.write_text("# prices.xlsx\n\n## Bonds\n| Name | Rate |\n| --- | --- |\n| A\\_B | 0.05 |\n", encoding="utf8")
+        source = next(s for s in build_import_plan(self.root).sources if s.path == path)
+        expected = b"### prices.xlsx\n#### Bonds\n| Name | Rate |\n| ------ | ------ |\n| A_B | 0.05 |\n\n"
+        self.assertEqual(_workbook_export(source), expected)
+        path.write_text(path.read_text().replace("0.05", "0.06"))
+        self.assertIsNone(_workbook_export(source))
+        changed = next(s for s in build_import_plan(self.root).sources if s.path == path)
+        self.assertNotEqual(_workbook_export(changed), expected)
+
     def test_readonly_adapter_refuses_creation_and_upload(self):
         with self.adapter() as adapter:
             adapter.read_only = True
             with self.assertRaises(NotebookLMError):
                 adapter.open_notebook(None, 'test')
             with self.assertRaises(NotebookLMError):
-                adapter.upload(self.root / 'lecture.md', 'test')
+                adapter.upload(self.root / 'lecture.md', 'test', on_created=self.fail)
         self.assertEqual(self.api.created, 0)
         self.assertEqual(self.api.uploads, 0)
 
@@ -294,6 +375,18 @@ class APITests(unittest.TestCase):
                     pass
             login_mock.assert_called_once()
 
+    def test_browser_exit_success_is_not_reported_as_verified_sign_in(self):
+        with patch("ntu_cool_materials.console.stdin_is_interactive", return_value=True), \
+             patch("ntu_cool_materials.notebooklm_api.api_client_context", side_effect=RuntimeError("no credentials")) as connect, \
+             patch("ntu_cool_materials.notebooklm_api.trigger_interactive_login", return_value=True), \
+             contextlib.redirect_stdout(io.StringIO()) as output:
+            adapter = NotebookLMAPIAdapter(set())
+            with self.assertRaisesRegex(NotebookLMError, "仍無法驗證登入"):
+                with adapter:
+                    pass
+            self.assertEqual(connect.call_count, 2)
+            self.assertNotIn("API 登入已驗證", output.getvalue())
+
     def test_interactive_select_existing_notebook(self):
         with self.adapter(interactive=True) as adapter, patch("builtins.input", return_value="1"):
             result = import_plan(self.plan, adapter)
@@ -313,8 +406,8 @@ class APITests(unittest.TestCase):
         legacy_title = "lecture [11b37d6cafc0].md"
         self.api.rows.append(SimpleNamespace(id="src-old", title=legacy_title, status=2))
         with self.adapter() as adapter:
-            ready = adapter.ready_titles()
-            self.assertIn("lecture.md", ready)
+            ready = adapter.ready_sources()
+            self.assertEqual(ready.get("src-old"), "lecture.md")
             self.assertEqual(self.api.renames, 1)
             self.assertEqual(self.api.rows[0].title, "lecture.md")
 
@@ -329,8 +422,8 @@ class APITests(unittest.TestCase):
         adapter = NotebookLMAPIAdapter({"announcements"}, context_factory=lambda path: self.api)
         self.api.rows.append(SimpleNamespace(id="src-ann", title="announcements - announcements.md", status=2))
         with adapter:
-            ready = adapter.ready_titles()
-            self.assertIn("announcements", ready)
+            ready = adapter.ready_sources()
+            self.assertEqual(ready.get("src-ann"), "announcements")
             self.assertEqual(self.api.rows[-1].title, "announcements")
 
 
@@ -343,7 +436,7 @@ class APITests(unittest.TestCase):
         path.write_text("first announcement", encoding="utf-8")
         return path
 
-    def test_updated_announcements_replace_all_old_versions_at_capacity(self):
+    def test_updated_announcements_replace_only_managed_source_after_upload(self):
         path = self.announcement_file()
         with patch('ntu_cool_materials.notebooklm_api.api_client_context', return_value=self.api):
             run_api_import(self.root, notebook_url=URL)
@@ -353,65 +446,109 @@ class APITests(unittest.TestCase):
                 SimpleNamespace(id="attachment", title="announcements - attachments - sample.pdf", status=2),
             ])
             path.write_text("updated announcement", encoding="utf-8")
-            result = run_api_import(self.root, max_sources=3)
+            result = run_api_import(self.root, max_sources=6)
             self.assertEqual(result.uploaded, 1)
-            self.assertEqual(sorted(r.title for r in self.api.rows), [
-                "announcements", "announcements - attachments - sample.pdf", "lecture.md"])
-            result = run_api_import(self.root, max_sources=3)
+            self.assertEqual({r.id for r in self.api.rows},
+                             {"source-1", "source-3", "old2", "old3", "attachment"})
+            result = run_api_import(self.root, max_sources=6)
             self.assertEqual(result.uploaded, 0)
             # Reverting to earlier content still replaces the current summary.
             path.write_text("first announcement", encoding="utf-8")
-            self.assertEqual(run_api_import(self.root, max_sources=3).uploaded, 1)
+            self.assertEqual(run_api_import(self.root, max_sources=6).uploaded, 1)
 
-    def test_announcement_delete_failure_prevents_upload(self):
+    def test_announcement_delete_failure_is_retried_without_reupload(self):
         (self.root / "lecture.md").unlink()
-        self.announcement_file()
-        self.api.rows.append(SimpleNamespace(id="old", title="announcements", status=2))
+        path = self.announcement_file()
         async def fail_delete(*args):
             raise RuntimeError("delete failed")
-        self.api.sources.delete = fail_delete
         with patch('ntu_cool_materials.notebooklm_api.api_client_context', return_value=self.api):
+            run_api_import(self.root, notebook_url=URL)
+            path.write_text("updated", encoding="utf-8")
+            self.api.sources.delete = fail_delete
             with self.assertRaises(NotebookLMError):
                 run_api_import(self.root, notebook_url=URL)
-        self.assertEqual(self.api.uploads, 0)
+            self.assertEqual({r.id for r in self.api.rows}, {"source-1", "source-2"})
+            self.api.sources.delete = self.api.delete_source
+            self.assertEqual(run_api_import(self.root).unchanged, 1)
+        self.assertEqual(self.api.uploads, 2)
+        self.assertEqual([r.id for r in self.api.rows], ["source-2"])
 
     def test_announcement_delete_must_be_confirmed(self):
         (self.root / "lecture.md").unlink()
-        self.announcement_file()
-        self.api.rows.append(SimpleNamespace(id="old", title="announcements (2)", status=2))
+        path = self.announcement_file()
         async def no_delete(*args):
             pass
-        self.api.sources.delete = no_delete
         with patch('ntu_cool_materials.notebooklm_api.api_client_context', return_value=self.api):
+            run_api_import(self.root, notebook_url=URL)
+            path.write_text("updated", encoding="utf-8")
+            self.api.sources.delete = no_delete
             with self.assertRaisesRegex(NotebookLMError, "舊公告"):
                 run_api_import(self.root, notebook_url=URL)
-        self.assertEqual(self.api.uploads, 0)
+        self.assertEqual(self.api.uploads, 2)
 
     def test_readonly_refuses_announcement_deletion(self):
         self.api.rows.append(SimpleNamespace(id="old", title="announcements", status=2))
         with self.adapter() as adapter:
             adapter.read_only = True
             with self.assertRaises(NotebookLMError):
-                adapter.remove_announcements()
+                adapter.delete_sources({"old"}, keep_source_id="new")
         self.assertEqual(len(self.api.rows), 1)
 
-    def test_existing_duplicates_cleaned_even_without_content_update(self):
+    def test_unmanaged_announcement_duplicate_is_retained(self):
         self.announcement_file()
         with patch('ntu_cool_materials.notebooklm_api.api_client_context', return_value=self.api):
             run_api_import(self.root, notebook_url=URL)
             self.api.rows.append(SimpleNamespace(id="duplicate", title="announcements (2)", status=2))
-            self.assertEqual(run_api_import(self.root).uploaded, 1)
-        self.assertEqual(sum(r.title.startswith("announcements") for r in self.api.rows), 1)
+            self.assertEqual(run_api_import(self.root).uploaded, 0)
+        self.assertIn("duplicate", {r.id for r in self.api.rows})
 
     def test_failed_announcement_upload_is_not_replayed(self):
         (self.root / "lecture.md").unlink()
-        self.announcement_file()
-        self.api.rows.append(SimpleNamespace(id="old", title="announcements", status=2))
-        self.api.fail_upload = True
+        path = self.announcement_file()
         with patch('ntu_cool_materials.notebooklm_api.api_client_context', return_value=self.api):
+            run_api_import(self.root, notebook_url=URL)
+            self.api.rows.append(SimpleNamespace(id="manual", title="announcements (2)", status=2))
+            path.write_text("updated", encoding="utf-8")
+            self.api.fail_upload = True
             with self.assertRaises(NotebookLMError):
                 run_api_import(self.root, notebook_url=URL)
             with self.assertRaises(NotebookLMError):
                 run_api_import(self.root)
+        self.assertEqual(self.api.uploads, 2)
+        self.assertEqual({r.id for r in self.api.rows}, {"source-1", "manual"})
+
+    def test_full_notebook_keeps_old_announcement(self):
+        (self.root / "lecture.md").unlink()
+        path = self.announcement_file()
+        with patch('ntu_cool_materials.notebooklm_api.api_client_context', return_value=self.api):
+            run_api_import(self.root, notebook_url=URL)
+            path.write_text("updated", encoding="utf-8")
+            with self.assertRaisesRegex(NotebookLMError, "來源數"):
+                run_api_import(self.root, max_sources=1)
         self.assertEqual(self.api.uploads, 1)
-        self.assertEqual(self.api.rows, [])
+        self.assertEqual([r.id for r in self.api.rows], ["source-1"])
+
+    def test_announcement_releases_slot_for_other_uploads_after_ready(self):
+        path = self.announcement_file()
+        with patch('ntu_cool_materials.notebooklm_api.api_client_context', return_value=self.api):
+            run_api_import(self.root, notebook_url=URL)
+            path.write_text("updated", encoding="utf-8")
+            (self.root / "notes.md").write_text("new notes", encoding="utf-8")
+            result = run_api_import(self.root, max_sources=3)
+        self.assertEqual(result.uploaded, 2)
+        self.assertEqual({r.title for r in self.api.rows}, {"lecture.md", "announcements (2)", "notes.md"})
+
+    def test_wait_failure_preserves_old_announcement_and_reconciles_by_id(self):
+        (self.root / "lecture.md").unlink()
+        path = self.announcement_file()
+        with patch('ntu_cool_materials.notebooklm_api.api_client_context', return_value=self.api):
+            run_api_import(self.root, notebook_url=URL)
+            self.api.fail_wait = True
+            path.write_text("updated", encoding="utf-8")
+            with self.assertRaises(NotebookLMError):
+                run_api_import(self.root, max_sources=2)
+            self.assertEqual({r.id for r in self.api.rows}, {"source-1", "source-2"})
+            self.api.fail_wait = False
+            self.assertEqual(run_api_import(self.root, max_sources=2).unchanged, 1)
+        self.assertEqual(self.api.uploads, 2)
+        self.assertEqual([r.id for r in self.api.rows], ["source-2"])
